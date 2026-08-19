@@ -1,27 +1,27 @@
 ---
 name: glab-mr-submit
-description: Create, review, repair, and update compliant GitLab merge requests with glab for local git changes, including structured OpenHarmony action/chip/XTS titles, automatic labels and non-blocking milestone matching, standardized XTS/DCTS/test-report Markdown records, automatic test-result screenshot uploads, v6.1.0.31 release worktree isolation, exact-file staging, six-dimensional post-creation Subagent review, same-MR repair updates, worktree safety checks, push, and post-creation MR verification. Use when the agent is asked to submit or prepare an MR, review an existing MR or current branch against a target branch, push a fix branch, attach test evidence, repair review findings, or enforce the company MR workflow.
+description: 用 glab 为本地 git 改动创建、审查、修复并更新合规的 GitLab 合并请求，包括结构化的 OpenHarmony 动作/芯片/XTS 标题、自动标签与非阻塞里程碑匹配、标准化的 XTS/DCTS/测试报告 Markdown 记录、自动测试结果截图上传、v6.1.0.31 发布 worktree 隔离、精确文件暂存、创建后六维 Subagent 审查、同 MR 修复更新、worktree 安全检查、推送与创建后 MR 验证。当 agent 被要求提交或准备 MR、对照目标分支审查既有 MR 或当前分支、推送修复分支、附加测试证据、修复审查发现或执行公司 MR 流程时使用。
 ---
 
-# glab MR Submit
+# glab MR 提交
 
-## Purpose
+## 用途
 
-Use this skill to turn a confirmed local fix into a compliant GitLab MR. Prefer the bundled script for execution because it validates commit/MR format, branch naming, persistent GitLab authentication, worktree/index integrity, exact file staging, screenshot uploads, `glab` arguments, and the final remote MR contents. After every real MR is created and verified, continue with the post-create six-dimensional review loop below; never run that loop for `--dry-run`.
+用本 skill 把确认的本地修复转成合规的 GitLab MR。执行时优先使用随附脚本，因为它会校验 commit/MR 格式、分支命名、持久 GitLab 认证、worktree/index 完整性、精确文件暂存、截图上传、`glab` 参数与最终远端 MR 内容。每个真实 MR 创建并验证后，继续执行下方的创建后六维审查循环；`--dry-run` 永远不跑该循环。
 
-Before executing a real commit, push, or MR creation, state the files to be submitted and the generated commit title/body. Never use `git add .`. Do not log out of GitLab after submission.
+执行真实 commit、push 或 MR 创建前，先列出要提交的文件与生成的 commit 标题/正文。绝不使用 `git add .`。提交后不要登出 GitLab。
 
-## Title and Commit Format
+## 标题与 Commit 格式
 
-Every MR title uses space-separated bracket fields in this order:
+每个 MR 标题使用按此顺序的空格分隔方括号字段：
 
 ```text
 [动作] [芯片] [XTS] <说明>
 ```
 
-Use one action from `修改`, `优化`, `升级`, `新增`, `修复`, `同步`, `回退`, `重构`, `适配`, `迁移`, or `移除`. The chip field is optional and may be either `[RK3568]` or `[A333/A537]`, never both. Omit the chip field for a common change. Add `[XTS]` for XTS/HATS/ACTS/DCTS or `test/xts` changes. Do not use the legacy compact form `[修改][XTS]`.
+动作从 `修改`、`优化`、`升级`、`新增`、`修复`、`同步`、`回退`、`重构`、`适配`、`迁移`、`移除` 中选一个。芯片字段可选，只能是 `[RK3568]` 或 `[A333/A537]`，两者不可同时出现。公共改动省略芯片字段。XTS/HATS/ACTS/DCTS 或 `test/xts` 改动加 `[XTS]`。不要使用旧式紧凑形式 `[修改][XTS]`。
 
-Examples:
+示例：
 
 ```text
 [修改] [RK3568] 修改 RK3568 EDP 屏幕系统调光失效问题
@@ -30,9 +30,9 @@ Examples:
 [优化] [RK3568] 优化 DNAKE 侧启动时序
 ```
 
-For a common change that spans both chips, keep the title chip-free and pass the additional chip labels with repeated `--label` options when needed.
+跨双芯片的公共改动保持标题无芯片字段，需要时用重复的 `--label` 选项附加芯片标签。
 
-Use this ordinary fix body format:
+使用这个普通修复正文格式：
 
 ```text
 [修改] 修改 <问题对象> <问题现象>问题
@@ -41,7 +41,7 @@ Use this ordinary fix body format:
     修改<失败原因或报错现象> 的问题
 ```
 
-Use the same title grammar for XTS/HATS/ACTS/DCTS/test-report related fixes:
+XTS/HATS/ACTS/DCTS/测试报告相关修复使用同样的标题语法：
 
 ```text
 [修改] [XTS] 修改 <测试模块或用例名> <修改内容或失败现象>问题
@@ -50,56 +50,56 @@ Use the same title grammar for XTS/HATS/ACTS/DCTS/test-report related fixes:
     修改<测试失败原因、环境差异或报错现象> 的问题
 ```
 
-Rules:
+规则：
 
-- Use the action/chip/XTS title grammar above; the bundled script rejects unknown actions, duplicate chip fields, compact bracket fields, and missing summaries.
-- Use `[XTS]` whenever paths, title, or context mention XTS, HATS, ACTS, DCTS, test report triage, or test modules under `test/xts`.
-- The script derives project labels from the title: a chip field adds its chip label, `[XTS]` adds `XTS`, and a chip-free title adds `通用框架层修改`. Use repeated `--label` options for additional labels such as a cross-chip scope or a project-specific label.
-- The script validates every derived/explicit label against the project before creating the MR.
-- Use the first commit line exactly as the MR title.
-- Include `具体:` in the commit body. The text after `具体:` must explain the reason or observed failure, not only say that files changed.
-- Use the commit body exactly as the MR description. Do not use `glab mr create --fill`.
-- For test-related MRs and any MR using `--screenshot`, use the required Markdown record format in [references/mr-description-template.md](references/mr-description-template.md). Every required section is a level-2 heading ending in `:`.
-- Put test commands in a fenced `bash` code block. Do not use four-space indentation for commands or evidence.
-- Include a `## 测试结果截图:` section with one or more Markdown images. Prefer `--screenshot PATH` so the script uploads local evidence and inserts the returned `/uploads/...` link.
-- Treat each HATS/ACTS/DCTS executable or test MODULE as an independent submission unit. Submit its direct test correction in a separate commit and MR; do not combine multiple module names, changed test files, or their pass evidence in one MR.
-- When one unavoidable change belongs to a shared test harness rather than a single MODULE, submit a separate MR titled for the shared harness. Do not mix it with a direct module fix. Validate and record every affected MODULE independently in that MR.
+- 使用上述动作/芯片/XTS 标题语法；随附脚本拒绝未知动作、重复芯片字段、紧凑方括号字段与缺失摘要。
+- 路径、标题或上下文提到 XTS、HATS、ACTS、DCTS、测试报告分诊或 `test/xts` 下的测试模块时，一律加 `[XTS]`。
+- 脚本从标题推导项目标签：芯片字段加对应芯片标签，`[XTS]` 加 `XTS`，无芯片标题加 `通用框架层修改`。附加标签（如跨芯片范围或项目特定标签）用重复的 `--label` 选项。
+- 脚本在创建 MR 前对项目校验每个推导/显式标签。
+- 第一行 commit 内容原样作为 MR 标题。
+- commit 正文必须包含 `具体:`。`具体:` 后的文字要解释原因或观察到的失败，不能只说改了哪些文件。
+- commit 正文原样作为 MR 描述。不要用 `glab mr create --fill`。
+- 测试相关 MR 与任何使用 `--screenshot` 的 MR，使用 [references/mr-description-template.md](references/mr-description-template.md) 中要求的 Markdown 记录格式。每个必需小节都是以 `:` 结尾的二级标题。
+- 测试命令放在围栏 `bash` 代码块中。命令或证据不要用四个空格缩进。
+- 包含 `## 测试结果截图:` 小节，放一个或多个 Markdown 图片。优先 `--screenshot PATH`，脚本会上传本地证据并插入返回的 `/uploads/...` 链接。
+- 把每个 HATS/ACTS/DCTS 可执行体或测试 MODULE 视为独立提交单元。其直接测试修正单独一个 commit 与 MR；不要把多个模块名、改动测试文件或它们的通过证据合并进一个 MR。
+- 当一个不可避免的改动属于共享测试夹具而非单一 MODULE 时，单独提交一个以共享夹具为标题的 MR。不要与直接模块修复混在一起。在该 MR 中独立校验并记录每个受影响的 MODULE。
 
-### Labels and Milestones
+### 标签与里程碑
 
-`create_glab_mr.py` passes the resolved labels to `glab mr create --label`. An optional `--milestone` accepts an active milestone title, global ID, or IID. Without it, the script matches the generated source branch first and the title/body second against active milestone versions such as `V1.2.0`; `v1.2.x` may match a unique `V1.2.*` milestone. No match, ambiguity, or conflict leaves the milestone unset and does not block submission. Set `MILESTONE_REQUIRED=true` only for a project that explicitly wants missing matches to fail.
+`create_glab_mr.py` 把解析后的标签传给 `glab mr create --label`。可选的 `--milestone` 接受生效中的里程碑标题、全局 ID 或 IID。未提供时，脚本先用生成的源分支、再用标题/正文，与生效中的里程碑版本（如 `V1.2.0`）匹配；`v1.2.x` 可能匹配唯一的 `V1.2.*` 里程碑。无匹配、有歧义或冲突时保持里程碑未设置，不阻塞提交。仅当项目明确要求缺失匹配即失败时，才设置 `MILESTONE_REQUIRED=true`。
 
-## Branch and MR Defaults
+## 分支与 MR 默认值
 
-Load defaults from `assets/defaults.env`:
+从 `assets/defaults.env` 加载默认值：
 
 - Remote: `origin`
-- Base version: `v6.1.0.31`
-- Target branch: `v6.1.0.31_release`
-- Required worktree base ref: `origin/v6.1.0.31_release`
-- Iteration version: `auto`
-- Fallback iteration: `v1.1.x`
-- MR assignee: `@cx`
-- GitLab host: `192.168.11.238`
-- GitLab API protocol: `http`
-- Git protocol: `ssh`
-- Milestone matching: `branch_then_message`, non-blocking by default
+- Base 版本: `v6.1.0.31`
+- 目标分支: `v6.1.0.31_release`
+- 必需的 worktree 基准 ref: `origin/v6.1.0.31_release`
+- 迭代版本: `auto`
+- 迭代兜底: `v1.1.x`
+- MR 指派人: `@cx`
+- GitLab 主机: `192.168.11.238`
+- GitLab API 协议: `http`
+- Git 协议: `ssh`
+- 里程碑匹配: `branch_then_message`，默认非阻塞
 
-Branch format:
+分支格式：
 
 ```text
 <iteration-version>/v6.1.0.31_<problem-name>
 ```
 
-When iteration is `auto`, infer the highest semantic version from remote branches matching `v*/v6.1.0.31_*` and use the next patch version, for example `v1.1.3` -> `v1.1.4`. If inference fails, use the fallback value in `defaults.env`.
+迭代为 `auto` 时，从匹配 `v*/v6.1.0.31_*` 的远端分支推断最高语义版本并取下一个补丁版本，例如 `v1.1.3` -> `v1.1.4`。推断失败时使用 `defaults.env` 中的兜底值。
 
-Derive `<problem-name>` from the commit title by removing all structured action/chip/XTS fields, the leading action word when repeated in the summary, and trailing `问题`, then converting the remaining text into a safe branch suffix. The script performs this transformation.
+`<problem-name>` 由脚本从 commit 标题推导：移除所有结构化动作/芯片/XTS 字段、摘要中重复出现的开头动作词与结尾的 `问题`，再把剩余文本转成安全的分支后缀。
 
-## Release Worktree Rule
+## 发布 Worktree 规则
 
-Submit from a fresh worktree based on `origin/v6.1.0.31_release`. Do not submit directly from long-lived product, modem, feature, or dirty integration branches.
+从基于 `origin/v6.1.0.31_release` 的新建 worktree 提交。不要直接从长期存在的产品、modem、功能或脏集成分支提交。
 
-Use this flow when the fix was developed in another worktree:
+修复在另一个 worktree 开发时用这个流程：
 
 ```bash
 git diff -- path/one path/two > /tmp/fix.patch
@@ -108,9 +108,9 @@ cd /home/cx/os/worktrees/<slug>
 git apply /tmp/fix.patch
 ```
 
-The helper script verifies that `origin/v6.1.0.31_release` is an ancestor of the current `HEAD` before it creates the final source branch, commit, push, or MR. If this check fails, create a new release worktree and apply only the selected patch there.
+辅助脚本在创建最终源分支、commit、push 或 MR 前，验证 `origin/v6.1.0.31_release` 是当前 `HEAD` 的祖先。校验失败时，新建发布 worktree 并只在那里应用选中的补丁。
 
-For a large repository where a full checkout is impractical, an index-only worktree is allowed only after initializing its index and skip-worktree bits. The required sequence is:
+对完整检出不现实的大仓库，只有初始化 index 与 skip-worktree 位后才允许 index-only worktree。必需序列：
 
 ```bash
 git worktree add --no-checkout /home/cx/os/worktrees/<slug> origin/v6.1.0.31_release
@@ -120,16 +120,16 @@ git -C /home/cx/os/worktrees/<slug> update-index --no-skip-worktree -- path/one 
 git -C /home/cx/os/worktrees/<slug> checkout HEAD -- path/one path/two
 ```
 
-Before running the submission script, `git status --porcelain` must contain only the selected files. The script refuses an empty index, unexpected deletions, or staged paths outside `--files`.
+运行提交脚本前，`git status --porcelain` 必须只包含选中的文件。脚本拒绝空 index、意外删除或 `--files` 之外的已暂存路径。
 
-## Recommended Execution
+## 推荐执行流程
 
-The title-derived labels are automatic. `--label` below is optional for additional labels, and `--milestone` is an optional explicit override; omit it to use the non-blocking branch-then-message matcher.
+标题推导的标签是自动的。下面的 `--label` 用于附加标签（可选），`--milestone` 是显式覆盖（可选）；省略它则使用非阻塞的分支-再-消息匹配器。
 
-1. Inspect `git status --short` and identify only files that belong to this MR.
-2. Create a fresh release worktree from `origin/v6.1.0.31_release` and apply only the selected patch there.
-3. Write the commit message to a temporary file, for example `/tmp/mr_message.txt`.
-4. Dry-run the script first:
+1. 检查 `git status --short`，只识别属于该 MR 的文件。
+2. 从 `origin/v6.1.0.31_release` 新建发布 worktree，只在那里应用选中的补丁。
+3. 把 commit 消息写入临时文件，例如 `/tmp/mr_message.txt`。
+4. 先 dry-run 脚本：
 
 ```bash
 python3 {{SKILLS_DIR}}/glab-mr-submit/scripts/create_glab_mr.py \
@@ -146,8 +146,8 @@ python3 {{SKILLS_DIR}}/glab-mr-submit/scripts/create_glab_mr.py \
   --dry-run
 ```
 
-5. Review generated branch, MR title, standardized MR description, screenshot upload plan, assignee, and exact staged file list. Dry-run never uploads, commits, pushes, or creates an MR.
-6. Execute for real only after the user asked to submit the MR:
+5. 审查生成的分支、MR 标题、标准化 MR 描述、截图上传计划、指派人与精确暂存文件清单。Dry-run 绝不上传、提交、推送或创建 MR。
+6. 只有用户要求提交 MR 后才真实执行：
 
 ```bash
 python3 {{SKILLS_DIR}}/glab-mr-submit/scripts/create_glab_mr.py \
@@ -163,42 +163,42 @@ python3 {{SKILLS_DIR}}/glab-mr-submit/scripts/create_glab_mr.py \
   --hostname 192.168.11.238
 ```
 
-The script uploads each screenshot to `projects/<encoded-project-path>/uploads`, appends the returned Markdown image to the screenshot section, and uses the resulting body for both the commit and MR. After creation it verifies the title grammar, labels, milestone, target branch, description, screenshot links, and exact changed paths through the GitLab API. On successful real creation, preserve the repository path and source branch and continue with the post-create review loop.
+脚本把每个截图上传到 `projects/<encoded-project-path>/uploads`，把返回的 Markdown 图片追加到截图小节，并用结果正文同时作为 commit 与 MR 的正文。创建后通过 GitLab API 验证标题语法、标签、里程碑、目标分支、描述、截图链接与精确变更路径。真实创建成功后，保留仓库路径与源分支，继续创建后审查循环。
 
-## Post-create Six-Dimension Review
+## 创建后六维审查
 
-Read [references/mr-review.md](references/mr-review.md) before starting this phase. This phase runs for every real MR created by this skill and for an explicitly requested review of an existing MR. It does not run during dry-run and it does not publish comments or modify the MR description.
+开始该阶段前阅读 [references/mr-review.md](references/mr-review.md)。本 skill 创建的每个真实 MR 与显式请求审查的既有 MR 都会执行该阶段。dry-run 不执行，且它不发布评论也不修改 MR 描述。
 
-### Resolve the review context
+### 解析审查上下文
 
-1. Parse the created MR URL and IID from the verified script output. For an existing MR, use the supplied URL or IID.
-2. Query the MR through the GitLab API and use its current `diff_refs.base_sha`, `diff_refs.head_sha`/`sha`, `source_branch`, and `target_branch` as the review authority. Do not assume the current checkout or a similarly named local branch is the MR source.
-3. Query `/changes` to capture the exact original changed paths. Refresh the MR metadata and changed paths at the start of the repair pass and the re-review pass.
-4. Review only `base_sha...head_sha`, with the repository absolute path, MR identity, branch names, and exact diff file list included in every Subagent prompt. Keep all Subagents read-only: no edits, commits, pushes, MR comments, or unrelated worktree changes.
+1. 从已验证的脚本输出解析创建的 MR URL 与 IID。对既有 MR，使用提供的 URL 或 IID。
+2. 通过 GitLab API 查询 MR，以其当前的 `diff_refs.base_sha`、`diff_refs.head_sha`/`sha`、`source_branch`、`target_branch` 为审查权威。不要假定当前检出或同名本地分支就是 MR 源。
+3. 查询 `/changes` 捕获精确的原始变更路径。修复轮与复审轮开始时刷新 MR 元数据与变更路径。
+4. 只审查 `base_sha...head_sha`，每个 Subagent prompt 都要包含仓库绝对路径、MR 身份、分支名与精确 diff 文件清单。保持所有 Subagent 只读：不编辑、不提交、不推送、不发 MR 评论、不改无关 worktree。
 
-### Run and aggregate the reviewers
+### 运行并聚合审查者
 
-1. Spawn six independent read-only review Subagents in parallel, one for each category: security, code quality, bugs, race conditions, test stability, and maintainability. Use the common context and category-specific prompts in the reference document.
-2. Wait for all six terminal results. If an agent errors, times out, or hits model capacity, retry that category once with a fallback model. If the retry also fails, mark the review incomplete and do not auto-fix or claim a clean review.
-3. Require every finding to include category, severity, confidence, absolute file path, line, trigger, evidence, impact, and recommendation. Require an explicit `no findings` result for clean categories.
-4. Deduplicate findings with the same root cause. Keep the highest justified severity, preserve cross-category tags, and downgrade speculative findings instead of treating them as confirmed defects.
-5. Report findings first in severity order, then clean categories, test status, incomplete dimensions, and residual risk. Keep the report in the conversation only.
+1. 并行生成六个独立的只读审查 Subagent，每个类别一个：安全、代码质量、缺陷、竞态、测试稳定性、可维护性。使用参考文档中的公共上下文与类别专属 prompt。
+2. 等待六个终态结果全部返回。某 agent 报错、超时或触达模型容量时，用兜底模型重试该类别一次。重试仍失败则标记审查不完整，不要自动修复或声称审查干净。
+3. 要求每个发现都包含类别、严重级、置信度、绝对文件路径、行号、触发条件、证据、影响与建议。干净的类别要求显式 `no findings` 结果。
+4. 对同根因发现去重。保留最高合理严重级，保留跨类别标签，把推测性发现降级而非当作确认缺陷。
+5. 报告顺序：先按严重级排列发现，然后干净类别、测试状态、不完整维度与残余风险。报告只留在对话中。
 
-### Repair and update the existing MR
+### 修复并更新既有 MR
 
-1. Automatically repair only confirmed, reproducible P0-P2 findings. Do not automatically implement P3 findings or subjective style suggestions.
-2. The main Agent performs the edits in the existing source worktree and branch; review Subagents never edit. Before editing, re-check that the worktree is clean and that every proposed file is in the original MR path set.
-3. If a repair needs a new file or any path outside the original MR, stop and report the scope expansion instead of silently enlarging the MR.
-4. Run `git diff --check` and the narrowest relevant build/test commands after repair. Stage exact paths with `git add -- <files>`, create a follow-up commit using the structured title format, and push the existing source branch. Never create a second MR or use `git add .`.
-5. Preserve the original MR description and add no automatic MR comment. A follow-up commit may describe the confirmed review findings and test evidence.
+1. 只自动修复已确认、可复现的 P0-P2 发现。不要自动实现 P3 发现或主观风格建议。
+2. 主 Agent 在既有源码 worktree 与分支中做编辑；审查 Subagent 从不编辑。编辑前重新确认 worktree 干净，且每个拟改文件都在原始 MR 路径集内。
+3. 修复需要新文件或原始 MR 之外的任何路径时，停下并报告范围扩大，而不是悄悄扩大 MR。
+4. 修复后运行 `git diff --check` 与最窄的相关构建/测试命令。用 `git add -- <files>` 精确暂存路径，用结构化标题格式创建跟进 commit，并推送既有源分支。绝不创建第二个 MR 或使用 `git add .`。
+5. 保留原始 MR 描述，不添加自动 MR 评论。跟进 commit 可以描述确认的审查发现与测试证据。
 
-### Re-review once
+### 只复审一次
 
-After a repair push, refresh the MR metadata and run all six reviewers again against the latest MR diff. This is one complete re-review, not an unbounded loop. If the re-review is incomplete or still reports confirmed P0-P2 findings, leave the MR unchanged after the latest push and report the unresolved items and required manual follow-up. If it is clean, report the updated MR SHA, repair commit, tests, and six clean dimensions.
+修复推送后，刷新 MR 元数据，对最新 MR diff 再跑全部六个审查者。这是一次完整复审，不是无界循环。复审不完整或仍报告确认的 P0-P2 发现时，在最新推送后保持 MR 不变，报告未解决项与需要的人工跟进。干净时，报告更新后的 MR SHA、修复 commit、测试与六个干净维度。
 
-## Persistent Authentication
+## 持久认证
 
-Configure the internal GitLab host once on the local machine. Prefer the system keyring; fall back to glab's local configuration only when the keyring is unavailable:
+在本机配置一次内部 GitLab 主机。优先系统 keyring；仅当 keyring 不可用时回退 glab 本地配置：
 
 ```bash
 glab auth login \
@@ -209,11 +209,11 @@ glab auth login \
   --use-keyring
 ```
 
-The token must be entered through glab's prompt or standard input and must never be written to this skill, a repository, a commit message, an MR description, or command output. The script runs `glab auth status --hostname 192.168.11.238` before a submission and stops with an actionable error if authentication is missing. It does not revoke or log out the persistent credential.
+token 必须通过 glab 的提示或标准输入输入，绝不写进本 skill、仓库、commit 消息、MR 描述或命令输出。脚本在提交前运行 `glab auth status --hostname 192.168.11.238`，认证缺失时以可操作的错误停止。它不会吊销或登出持久凭据。
 
-## Standard Record
+## 标准记录
 
-Read [references/mr-description-template.md](references/mr-description-template.md) before writing a test-related message or any MR that includes screenshots. The standard order is:
+写测试相关消息或任何包含截图的 MR 前，阅读 [references/mr-description-template.md](references/mr-description-template.md)。标准顺序：
 
 ~~~markdown
 ## 具体:
@@ -235,27 +235,27 @@ command
 ## 测试结果截图:
 ~~~
 
-Ordinary changes without test evidence still require the structured title grammar and `具体:`, but do not require the standard record. Once a manual test, command, or `--screenshot` is included, use the full Markdown record so GitLab renders each section consistently.
+无测试证据的普通改动仍需要结构化标题语法与 `具体:`，但不需要标准记录。一旦包含人工测试、命令或 `--screenshot`，就使用完整 Markdown 记录，让 GitLab 一致渲染每个小节。
 
-## Safety Checks
+## 安全检查
 
-Stop and ask the user before execution if:
+出现以下情况停下并询问用户：
 
-- The target branch cannot be found locally or on the remote.
-- The current worktree is not based on `origin/v6.1.0.31_release`.
-- GitLab authentication for `192.168.11.238` is missing or invalid.
-- The Git index is empty, incomplete, or contains unexpected worktree changes.
-- Any requested file does not exist or has no changes.
-- The working tree contains unrelated changes and the user has not clearly selected files.
-- The commit message fails validation.
-- The title does not use a supported `[动作] [芯片] [XTS] <说明>` form, or a test-related title omits `[XTS]`.
-- A derived or explicit label is missing from the target GitLab project, or an explicit chip/XTS label conflicts with the title fields.
-- A test-related or screenshot-bearing message has missing required headings, a non-fenced command, or no screenshot link/path.
-- The staged paths or post-create MR changes do not exactly match the requested files.
-- The generated remote branch already exists and a unique suffix cannot be generated.
-- The six-dimensional review is incomplete after one retry for any category.
-- An automatic repair would modify a path outside the original MR change set.
-- A review finding is speculative, P3-only, or cannot be reproduced from the exact MR diff.
-- A post-repair test or one-time re-review cannot be completed; report the MR as unresolved instead of claiming success.
+- 本地或远端找不到目标分支。
+- 当前 worktree 不是基于 `origin/v6.1.0.31_release`。
+- `192.168.11.238` 的 GitLab 认证缺失或无效。
+- Git index 为空、不完整或包含意外 worktree 改动。
+- 任何请求的文件不存在或没有改动。
+- 工作树包含无关改动而用户没有明确选择文件。
+- commit 消息校验失败。
+- 标题不是受支持的 `[动作] [芯片] [XTS] <说明>` 形式，或测试相关标题省略 `[XTS]`。
+- 推导或显式标签在目标 GitLab 项目中缺失，或显式芯片/XTS 标签与标题字段冲突。
+- 测试相关或含截图的消息缺少必需标题、有非围栏命令或没有截图链接/路径。
+- 已暂存路径或创建后 MR 改动与请求文件不完全一致。
+- 生成的远端分支已存在且无法生成唯一后缀。
+- 任一类别重试一次后六维审查仍不完整。
+- 自动修复会修改原始 MR 变更集之外的路径。
+- 审查发现是推测性的、仅 P3 或无法从精确 MR diff 复现。
+- 无法完成修复后测试或一次性复审；报告 MR 未解决而不是声称成功。
 
-The script automatically appends `_2`, `_3`, etc. when a generated branch exists locally or remotely.
+生成的本地或远端分支已存在时，脚本自动追加 `_2`、`_3` 等后缀。

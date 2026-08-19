@@ -1,28 +1,28 @@
-# RK3568 Jenkins job
+# RK3568 Jenkins 作业
 
-## Endpoint
+## 端点
 
 - Base URL: `http://192.168.13.121:8080`
-- Job: `OpenHarmony-V6.1-RockChip`
-- Build endpoint: `/job/OpenHarmony-V6.1-RockChip/buildWithParameters`
-- Read-only metadata endpoint: `/job/OpenHarmony-V6.1-RockChip/api/json`
+- 作业: `OpenHarmony-V6.1-RockChip`
+- 构建端点: `/job/OpenHarmony-V6.1-RockChip/buildWithParameters`
+- 只读元数据端点: `/job/OpenHarmony-V6.1-RockChip/api/json`
 
-The hostname shown in Jenkins links is `jenkins-chenxin.local:8080`; use `JENKINS_BASE_URL` when that name resolves in the execution environment.
+Jenkins 链接中显示的主机名是 `jenkins-chenxin.local:8080`；执行环境中该名字可解析时使用 `JENKINS_BASE_URL`。
 
-## Required phase-1 parameters
+## Phase-1 必需参数
 
-The job exposes many product defaults. The trigger helper supplies these three parameters explicitly because they select the source and build mode:
+该作业暴露大量产品默认值。触发辅助脚本显式提供以下三个参数，因为它们选择源码与构建模式：
 
-| Parameter | RK3568 validation value |
+| 参数 | RK3568 验证值 |
 | --- | --- |
-| `FIRMWARE_BRANCH` | MR source branch |
-| `BUILD_MODE` | `INCREMENTAL` by default; use `FULL` only when requested |
+| `FIRMWARE_BRANCH` | MR 源分支 |
+| `BUILD_MODE` | 默认 `INCREMENTAL`；仅被要求时才用 `FULL` |
 | `FIRMWARE_TYPE` | `XTS` |
 
-Also pass `Openharmony_Devices=rk3568_dsi_800x1280` for the RK3568 product instead of relying on a mutable Jenkins default.
+同时为 RK3568 产品传入 `Openharmony_Devices=rk3568_dsi_800x1280`，不要依赖可变的 Jenkins 默认值。
 
-## Known validation
+## 已知验证记录
 
-On 2026-08-09, a read-only metadata request reported `buildable: true` and all four parameters above. Jenkins build #46 used the branch `rk3568/v6.1.0.31_OTA_prefix_change`, `BUILD_MODE=INCREMENTAL`, and `FIRMWARE_TYPE=XTS`; it archived `updater_full.zip` after a successful build.
+2026-08-09 的一次只读元数据请求报告 `buildable: true` 且以上四个参数齐全。Jenkins 构建 #46 使用分支 `rk3568/v6.1.0.31_OTA_prefix_change`、`BUILD_MODE=INCREMENTAL`、`FIRMWARE_TYPE=XTS`；构建成功后归档了 `updater_full.zip`。
 
-Do not infer a future build number from this record. Capture the queue URL and assigned build URL returned by the current trigger.
+不要从这条记录推断未来的构建号。捕获当前触发返回的 queue URL 与分配的构建 URL。

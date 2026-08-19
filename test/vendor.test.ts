@@ -89,8 +89,10 @@ describe('registerVendoredSkills', () => {
       expect(reg.content).toContain('## 技能资源')
       expect(reg.resourceBase.kind).toBe('directory')
     }
-    // 各模块 skill 保持独立（模块化）
-    expect(registrations.find((r) => r.name === 'glab-mr-submit').content).toContain('glab MR Submit')
+    // 各模块 skill 保持独立（模块化），正文为中文版且保留脚本路径
+    const glab = registrations.find((r) => r.name === 'glab-mr-submit')
+    expect(glab.content).toContain('# glab MR 提交')
+    expect(glab.content).toContain('create_glab_mr.py')
   })
 
   it('缺失或损坏的 skill 记警告并跳过，不阻断其余注册', () => {

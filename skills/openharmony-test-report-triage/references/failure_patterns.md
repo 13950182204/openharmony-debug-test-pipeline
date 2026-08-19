@@ -1,97 +1,96 @@
-# Failure Patterns
+# 失败模式
 
-These are reusable patterns, not automatic conclusions. Always verify with the current report, source, and product config.
+这些是可复用模式，不是自动结论。始终用当前报告、源码与产品配置验证。
 
-## Product lacks hardware but model/mock is exposed
+## 产品缺硬件但暴露了 model/mock
 
-Symptoms:
-- Tests discover a sensor/vibrator/camera/etc. on a product that physically lacks it.
-- HDF/common inherited config enables a peripheral model.
-- Hilog or API output shows mock names such as `sensor_test` or preset vibrator effects.
+症状：
+- 测试在物理上没有某传感器的产品上发现了传感器/振动器/摄像头等。
+- HDF/公共继承配置启用了某个外设 model。
+- hilog 或 API 输出显示 `sensor_test` 等 mock 名或预设振动效果。
 
-Fix direction:
-- Product-side feature override is preferred.
-- Explicitly disable the relevant peripheral model or remove the advertised capability for that product.
-- Do not patch tests to ignore hardware that the product still advertises.
+修复方向：
+- 优先产品侧功能覆盖。
+- 显式禁用相关外设 model，或移除该产品宣传的能力。
+- 不要为让测试忽略产品仍在宣传的硬件而改测试。
 
-## Timeout with many blocked cases
+## 超时伴随大量阻塞用例
 
-Symptoms:
-- One testcase fails with timeout.
-- Many later cases are blocked in the same module.
-- `module_run.log` shows the runner stopped after the first timeout.
+症状：
+- 一个用例超时失败。
+- 同一模块中许多后续用例被阻塞。
+- `module_run.log` 显示运行器在第一个超时后停止。
 
-Fix direction:
-- Focus on the first timeout case.
-- Check whether a promise/callback error path fails to call `done()`.
-- Check whether the product/framework failed to deliver the callback that the test waits for.
+修复方向：
+- 聚焦第一个超时用例。
+- 检查 promise/回调错误路径是否未能调用 `done()`。
+- 检查产品/框架是否未能送达测试等待的回调。
 
-## Floating-point or timing tolerance
+## 浮点或时序容差
 
-Symptoms:
-- Actual value is extremely close to expected, such as `1e-11` vs `0`.
-- The API is mathematically or timing sensitive.
+症状：
+- 实际值极接近期望值，如 `1e-11` 对 `0`。
+- API 对数学或时序敏感。
 
-Fix direction:
-- Use a small epsilon or tolerance when the API contract allows it.
-- Keep the tolerance narrow and explain the numeric evidence.
+修复方向：
+- API 契约允许时使用小的 epsilon 或容差。
+- 保持容差狭窄并解释数值证据。
 
-## Callback/state machine edge
+## 回调/状态机边界
 
-Symptoms:
-- Operation callback returns success, but a later state/event callback never arrives.
-- Test logs stop at "wait for callback" and then timeout.
+症状：
+- 操作回调返回成功，但后续状态/事件回调从未到达。
+- 测试日志停在「等待回调」然后超时。
 
-Fix direction:
-- Identify which framework event maps to the JS/native callback.
-- Product/framework root fix should emit the missing state/event when API semantics require it.
-- Test-side workaround may avoid exact timing or EOF boundaries, but label it as a workaround when it does not fix product semantics.
+修复方向：
+- 确认哪个框架事件映射到 JS/原生回调。
+- 当 API 语义要求时，产品/框架根因修复应发出缺失的状态/事件。
+- 测试侧 workaround 可以避开精确时序或 EOF 边界，但当它不修复产品语义时必须标注为 workaround。
 
-## JS HAP async API timeout with working sync path
+## JS HAP 异步 API 超时但同步路径正常
 
-Symptoms:
-- A JS ACTS HAP case times out at 5000 ms.
-- Hilog shows the case entered, then stops after a promise/callback API call or before `done()`.
-- Adjacent sync API cases for the same capability pass.
-- Replacing a callback helper such as `getProperties(callback)` with an available sync equivalent such as
-  `getWindowProperties()` removes one source of nondeterminism.
+症状：
+- JS ACTS HAP 用例在 5000 ms 超时。
+- hilog 显示用例进入后，在 promise/回调 API 调用之后或 `done()` 之前停止。
+- 同一能力的相邻同步 API 用例通过。
+- 把 `getProperties(callback)` 之类的回调辅助换成可用的同步等价物如 `getWindowProperties()`，可消除一个不确定性来源。
 
-Fix direction:
-- First prove the missing callback/promise return with hilog around the exact case.
-- Check whether the API has sync variants and whether existing cases already validate those sync variants.
-- For a local XTS workaround, keep a real assertion on a deterministic observable result, such as return type or error code.
-- Do not blindly assert a state transition if the product can legally return without changing visible state on this board.
-- After rebuilding a JS HAP, confirm actual ABC/HAP contents with `strings`; if stale strings remain, follow the JS HAP cache refresh flow in `fast_rebuild.md`.
+修复方向：
+- 先用精确用例附近的 hilog 证明缺失的回调/promise 返回。
+- 检查 API 是否有同步变体，以及既有用例是否已验证这些同步变体。
+- 本地 XTS workaround 时，对确定性的可观察结果（如返回类型或错误码）保留真实断言。
+- 如果产品在该板上可以合法返回而不改变可见状态，不要盲目断言状态迁移。
+- 重建 JS HAP 后用 `strings` 确认实际 ABC/HAP 内容；若仍有陈旧字符串，按 `fast_rebuild.md` 中的 JS HAP 缓存刷新流程处理。
 
-## External network resource drift
+## 外部网络资源漂移
 
-Symptoms:
-- Only a network-dependent request/download testcase fails.
-- XML may have an empty message, but hilog shows an assertion mismatch.
-- The testcase uses a public URL and assumes specific headers, content length, status, or response behavior.
-- Runtime response headers differ from the test assumption.
+症状：
+- 只有依赖网络的请求/下载用例失败。
+- XML 可能消息为空，但 hilog 显示断言不匹配。
+- 用例使用公共 URL，并假设特定头部、内容长度、状态或响应行为。
+- 运行期响应头与测试假设不同。
 
-Example:
-- `SUB_Request_DownloadManagement_Download_0100` uses `https://gitee.com`.
-- The testcase description says it is testing an undefined file size and asserts `pro.sizes[0] == -1`.
-- The runtime response includes `content-length`, so request reports a positive size such as `642022`.
-- Upstream `xts_acts` `OpenHarmony-6.1-Release` changed this URL to `https://weibo.com` while keeping the `-1` assertion.
+示例：
+- `SUB_Request_DownloadManagement_Download_0100` 使用 `https://gitee.com`。
+- 用例描述说它在测试未定义文件大小，断言 `pro.sizes[0] == -1`。
+- 运行期响应包含 `content-length`，所以请求报告了 `642022` 这样的正大小。
+- 上游 `xts_acts` 的 `OpenHarmony-6.1-Release` 把该 URL 改为 `https://weibo.com`，同时保留 `-1` 断言。
 
-Detailed case record:
-- Report: `zxts/ActsRequestAuthorityTest`, total 259, passed 258, failed 1, blocked 0.
-- Module/case: `requestDownloadJSUnit#SUB_Request_DownloadManagement_Download_0100`.
-- What it tests: request-agent download should report unknown file size as `-1`.
-- Test input: `action = DOWNLOAD`, public URL originally `https://gitee.com`, save path `./SUB_Request_DownloadManagement_Download_0100`, network `ANY`, overwrite enabled.
-- Test flow: create `request.agent.Config`, call `request.agent.create(baseContext, config)`, register `task.on('completed', completedCallback)`, call `task.start()`, read `pro.sizes[0]` in the completed callback, assert `pro.sizes[0] == -1`, then call `done()`.
-- Expected: completed progress reports `sizes[0] = -1` because the resource is meant to have undefined size.
-- Actual evidence: hilog recorded completed progress with `processed: 642022`, `sizes: [642022]`, `content-type: text/html; charset=utf-8`, and `content-length: 642022`; the assertion failed with `expect 642022 equals -1`.
-- Root cause: the testcase depended on mutable external URL behavior. `https://gitee.com` returned a normal HTML response with `Content-Length`, so the request framework correctly reported a known size.
-- Upstream check: ACTS repo `https://gitcode.com/openharmony/xts_acts.git`, branch `OpenHarmony-6.1-Release`, commit `9830c07a91a0cdaa19dc0eab4fd99b8967bafce2`, path `request/newRequestAuthorityTest/entry/src/ohosTest/ets/test/requestDownload.test.ets`, changed the URL to `https://weibo.com` and kept `expect(pro.sizes[0]).assertEqual(-1)`.
-- Minimal local backport: in the matching monorepo path, change only this case URL from `https://gitee.com` to `https://weibo.com`.
-- Testcase compile: because this is a testcase-source change, compile `test/xts/acts/request/newRequestAuthorityTest:ActsRequestAuthorityTest`. After GN output exists, prefer root `build.sh --fast-rebuild --build-target test/xts/acts/request/newRequestAuthorityTest:ActsRequestAuthorityTest` to avoid repeated GN and `suite_type mismatch` noise.
+详细用例记录：
+- 报告：`zxts/ActsRequestAuthorityTest`，共 259，通过 258，失败 1，阻塞 0。
+- 模块/用例：`requestDownloadJSUnit#SUB_Request_DownloadManagement_Download_0100`。
+- 测试内容：request-agent 下载应把未知文件大小报告为 `-1`。
+- 测试输入：`action = DOWNLOAD`，公共 URL 原为 `https://gitee.com`，保存路径 `./SUB_Request_DownloadManagement_Download_0100`，网络 `ANY`，允许覆盖。
+- 测试流程：创建 `request.agent.Config`，调用 `request.agent.create(baseContext, config)`，注册 `task.on('completed', completedCallback)`，调用 `task.start()`，在 completed 回调中读取 `pro.sizes[0]`，断言 `pro.sizes[0] == -1`，然后调用 `done()`。
+- 期望：completed 进度报告 `sizes[0] = -1`，因为该资源本应无定义大小。
+- 实际证据：hilog 记录 completed 进度 `processed: 642022`、`sizes: [642022]`、`content-type: text/html; charset=utf-8`、`content-length: 642022`；断言以 `expect 642022 equals -1` 失败。
+- 根因：用例依赖可变的外部 URL 行为。`https://gitee.com` 返回了带 `Content-Length` 的正常 HTML 响应，请求框架因此正确报告了已知大小。
+- 上游核查：ACTS 仓库 `https://gitcode.com/openharmony/xts_acts.git`，分支 `OpenHarmony-6.1-Release`，commit `9830c07a91a0cdaa19dc0eab4fd99b8967bafce2`，路径 `request/newRequestAuthorityTest/entry/src/ohosTest/ets/test/requestDownload.test.ets`，把 URL 改为 `https://weibo.com` 并保留 `expect(pro.sizes[0]).assertEqual(-1)`。
+- 最小本地回移：在匹配的 monorepo 路径中，只把该用例 URL 从 `https://gitee.com` 改为 `https://weibo.com`。
+- 用例编译：因为这是用例源码改动，编译 `test/xts/acts/request/newRequestAuthorityTest:ActsRequestAuthorityTest`。GN 输出存在后，优先根目录 `build.sh --fast-rebuild --build-target test/xts/acts/request/newRequestAuthorityTest:ActsRequestAuthorityTest`，避免重复 GN 与 `suite_type mismatch` 噪音。
 
-Fix direction:
-- Prefer replacing the public URL with a controlled test endpoint that has the intended response behavior.
-- When upstream already changed the URL or fixture, prefer backporting that minimal change first.
-- If the API contract allows both unknown and known size, adjust the assertion to accept both and explain the weakened test meaning.
-- Do not change product/framework code to hide a valid `Content-Length` just to satisfy a stale test assumption.
+修复方向：
+- 优先把公共 URL 换成具有预期响应行为的受控测试端点。
+- 上游已改 URL 或夹具时，优先最小回移该改动。
+- API 契约同时允许未知与已知大小时，调整断言同时接受两者，并说明被削弱的测试含义。
+- 不要为迎合过时的测试假设而改产品/框架代码来隐藏合法的 `Content-Length`。

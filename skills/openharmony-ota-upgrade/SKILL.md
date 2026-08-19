@@ -1,41 +1,41 @@
 ---
 name: openharmony-ota-upgrade
-description: Package, deliver, trigger, monitor, and verify OpenHarmony full or incremental OTA upgrades. Use for OpenHarmony board OTA work involving update.zip, updater packages, HDC, write_updater, reboot updater, post-upgrade boot verification, OTA signature or version failures, or creating an auditable OTA result.
+description: 打包、投递、触发、监控并验证 OpenHarmony 全量或增量 OTA 升级。用于 OpenHarmony 板级 OTA 工作，涉及 update.zip、updater 包、HDC、write_updater、reboot updater、升级后启动验证、OTA 签名或版本失败，或产出可审计的 OTA 结果。
 ---
 
-# OpenHarmony OTA Upgrade
+# OpenHarmony OTA 升级
 
-Run OTA work as a closed loop: identify the source and target versions, create one explicit package, validate it locally, stage it to one explicit device, trigger updater, wait for the device to return, and record the result. Do not treat a successful `hdc file send` or `write_updater` return as an upgrade success.
+把 OTA 工作当作闭环执行：确认源版本与目标版本，制作一个明确的包，本地校验，投递到一台明确的设备，触发 updater，等待设备回归，并记录结果。不要把 `hdc file send` 或 `write_updater` 的成功返回当作升级成功。
 
-## Safety Rules
+## 安全规则
 
-- Use a full OTA unless the user explicitly requires an incremental package and supplies a verified source-image baseline.
-- Run `hdc list targets` before every device-changing step. When zero or multiple targets exist, stop and ask for a target serial. Use `hdc -t <serial>` thereafter.
-- Capture the current device version before staging. Do not overwrite `/data/updater/` with an unverified package.
-- Do not use factory reset, erase userdata, or repeated updater reboots as recovery actions. Collect updater state and logs first.
-- Treat device disconnect immediately after `reboot updater` as expected. Escalate only after a bounded reconnect wait and log collection.
+- 除非用户明确要求增量包并提供经过验证的源镜像基线，否则使用全量 OTA。
+- 每个会改变设备的步骤前运行 `hdc list targets`。零个或多个目标时，停下并索要目标 serial。此后使用 `hdc -t <serial>`。
+- 投递前捕获当前设备版本。不要用未验证的包覆盖 `/data/updater/`。
+- 不要用恢复出厂设置、擦除 userdata 或反复 updater 重启作为恢复手段。先收集 updater 状态与日志。
+- 把 `reboot updater` 后立即出现的设备断开视为预期。只有在有界重连等待与日志收集之后才升级处理。
 
-## Workflow
+## 工作流
 
-1. Identify the board, package mode, source version, target version, package path, and target serial. Read the board's OTA script and updater XML before packaging.
-2. Complete the product build and any board pack flow needed for bootloader or boot image changes. Confirm that every image named by the updater XML exists and is fresh.
-3. Build exactly one package. For the A333 `a333_newpines` flow, read [references/a333-newpines.md](references/a333-newpines.md).
-4. Run the local preflight script before touching the device:
+1. 确认板型、包模式、源版本、目标版本、包路径与目标 serial。打包前阅读该板的 OTA 脚本与 updater XML。
+2. 完成产品构建与 bootloader 或 boot 镜像改动所需的板级打包流程。确认 updater XML 点名的每个镜像都存在且新鲜。
+3. 只制作一个包。对 A333 `a333_newpines` 流程，阅读 [references/a333-newpines.md](references/a333-newpines.md)。
+4. 触碰设备前运行本地预检脚本：
 
    ```bash
    "{{SKILLS_DIR}}/openharmony-ota-upgrade/scripts/ota_preflight.sh" <ota-package.zip>
    ```
 
-   Resolve every failure before staging. Record the printed SHA-256 and package size.
-5. Perform device preflight with the selected serial. Compare the running version against the intended source version, verify `/data` has at least the package size plus the script's reported margin, and confirm `write_updater` exists.
-6. Transfer the package to a mode-specific, explicit destination. Compare the remote file size with the local size before running `write_updater`.
-7. Run `write_updater updater <remote-package>` and, only after it returns successfully, run `reboot updater`. Do not issue additional write or reboot commands while the updater is running.
-8. Poll for the same device to return. Once online, verify `bootevent.boot.completed`, target version properties, and the product's critical function. Read updater result and logs even on success.
-9. Report the closed-loop evidence: source version, target version, package mode/path/SHA-256, target serial, transfer size match, updater result, boot completion, and any remaining risk.
+   解决所有失败后再投递。记录打印的 SHA-256 与包大小。
+5. 用选定的 serial 做设备预检。把运行版本与预期源版本对比，确认 `/data` 至少有包大小加脚本报告的余量，并确认 `write_updater` 存在。
+6. 把包传输到按模式区分、明确的目标路径。运行 `write_updater` 前对比远端文件大小与本地大小。
+7. 运行 `write_updater updater <remote-package>`，只有它成功返回后才运行 `reboot updater`。updater 运行期间不要发出额外的 write 或 reboot 命令。
+8. 轮询同一台设备回归。上线后验证 `bootevent.boot.completed`、目标版本属性与产品关键功能。即使成功也读取 updater 结果与日志。
+9. 报告闭环证据：源版本、目标版本、包模式/路径/SHA-256、目标 serial、传输大小匹配、updater 结果、启动完成情况与任何残余风险。
 
-## Standard Device Commands
+## 标准设备命令
 
-Replace all placeholders. Run the read-only commands before the state-changing commands.
+替换所有占位符。先运行只读命令，再运行改状态的命令。
 
 ```bash
 TARGET=<hdc-target-serial>
@@ -54,24 +54,24 @@ hdc -t "$TARGET" shell "write_updater updater $REMOTE"
 hdc -t "$TARGET" shell 'reboot updater'
 ```
 
-For an incremental package, set `REMOTE=/data/updater/updater_diff.zip`; keep the same `write_updater updater` command.
+增量包设置 `REMOTE=/data/updater/updater_diff.zip`；`write_updater updater` 命令保持不变。
 
-After reconnecting, use:
+重连后使用：
 
 ```bash
 hdc -t "$TARGET" shell 'param get bootevent.boot.completed; param get const.product.software.version; param get const.ohos.fullname'
 hdc -t "$TARGET" shell 'cat /data/updater/updater_result 2>/dev/null; cat /data/updater/log/updater_stage_log 2>/dev/null; tail -n 120 /data/updater/log/updater_log 2>/dev/null'
 ```
 
-## Failure Routing
+## 失败路由
 
-- Package preflight fails: rebuild or regenerate the package. Do not transfer it.
-- Signature or package-load failure: compare the package signing certificate with the certificate embedded in the updater baseline. A new key requires a matching updater image on the device.
-- Version rejection: verify that the package source-version whitelist describes the running version, while the package XML target version describes the new version.
-- Repeated updater boot or no normal boot: stop retries, collect `/data/updater/updater_result`, `updater_stage_log`, `updater_log`, and the active updater XML/fstab mapping. Check for stale updater commands only after preserving the evidence.
-- Image or partition failure: compare the updater XML component names and partition addresses with the device updater `fstab` and the actual board partition layout.
+- 包预检失败：重建或重新生成包。不要传输。
+- 签名或包加载失败：把包签名证书与 updater 基线内置证书对比。新密钥需要设备上有匹配的 updater 镜像。
+- 版本被拒：确认包的源版本白名单描述的是运行版本，而包 XML 的目标版本描述的是新版本。
+- 反复进入 updater 或无法正常启动：停止重试，收集 `/data/updater/updater_result`、`updater_stage_log`、`updater_log` 与生效中的 updater XML/fstab 映射。只有在保全证据之后才检查过期的 updater 命令。
+- 镜像或分区失败：对比 updater XML 组件名与分区地址、设备 updater `fstab` 以及实际板级分区布局。
 
-## Resources
+## 资源
 
-- [scripts/ota_preflight.sh](scripts/ota_preflight.sh): Validate a local OTA ZIP and print a deployment manifest.
-- [references/a333-newpines.md](references/a333-newpines.md): Board-specific A333 full and incremental package commands, version semantics, and updater evidence paths.
+- [scripts/ota_preflight.sh](scripts/ota_preflight.sh)：校验本地 OTA ZIP 并打印部署清单。
+- [references/a333-newpines.md](references/a333-newpines.md)：A333 板级全量与增量包命令、版本语义与 updater 证据路径。

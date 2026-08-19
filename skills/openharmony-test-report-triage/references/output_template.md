@@ -1,6 +1,6 @@
-# Output Template
+# 输出模板
 
-Use concise, source-backed output. Prefer one section per module or root cause.
+使用简洁、有源码支撑的输出。优先每个模块或根因一个小节。
 
 ```text
 模块：
@@ -20,6 +20,6 @@ Use concise, source-backed output. Prefer one section per module or root cause.
 风险/备注：
 ```
 
-When multiple cases share one root cause, group them together. Lead with the first failing case when blocked cases are cascade fallout.
+多个用例共享同一根因时归并在一起。阻塞用例是级联连带时，以第一个失败用例开头。
 
-When testcase source is changed, `用例单编` is required. Include the smallest compile target or command, whether it used the suite wrapper or root `--fast-rebuild`, pass/fail result, and generated package/artifact path if the build prints one. If the build cannot be run in the current environment, state the blocker and still provide the exact command to run.
+改了用例源码时，`用例单编` 必填。包含最小编译目标或命令、是否走套件包装或根目录 `--fast-rebuild`、通过/失败结果，以及构建打印时生成的包/产物路径。当前环境无法运行构建时，说明阻塞原因，仍要给出精确的待运行命令。

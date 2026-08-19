@@ -1,18 +1,18 @@
-# HDF and Product Feature Overrides
+# HDF 与产品功能覆盖
 
-Use product-side overrides when a common inherited config enables hardware/model support that the product does not actually provide.
+当公共继承配置启用了产品实际不具备的硬件/model 支持时，使用产品侧覆盖。
 
-## Investigation pattern
+## 调查模式
 
-1. Find product config, usually under `vendor/<vendor>/<product>/config.json`.
-2. Inspect inherited configs from `productdefine/common/inherit/*.json`.
-3. Search generated build args under `out/<product>/args.gn` when present.
-4. Find the GN variable that gates the driver/model code.
-5. Override the feature in the product's component list.
+1. 找到产品配置，通常在 `vendor/<vendor>/<product>/config.json`。
+2. 检查 `productdefine/common/inherit/*.json` 的继承配置。
+3. 存在时搜索 `out/<product>/args.gn` 中的生成构建参数。
+4. 找到门控驱动/model 代码的 GN 变量。
+5. 在产品组件列表中覆盖该功能。
 
-## Override example
+## 覆盖示例
 
-For a product without a real sensor stack:
+对没有真实传感器栈的产品：
 
 ```json
 {
@@ -23,7 +23,7 @@ For a product without a real sensor stack:
 }
 ```
 
-For a product without a real vibrator:
+对没有真实振动器的产品：
 
 ```json
 {
@@ -34,10 +34,9 @@ For a product without a real vibrator:
 }
 ```
 
-## Guardrails
+## 护栏
 
-- Only disable a model when the product should not advertise that capability.
-- Preserve unrelated local product changes.
-- Validate JSON after editing.
-- Rebuild the affected product image/components before treating the fix as verified.
-
+- 只有当产品不应宣传该能力时才禁用某个 model。
+- 保留无关的本地产品改动。
+- 编辑后校验 JSON。
+- 重新构建受影响的产品镜像/组件后，才视为修复已验证。

@@ -1,18 +1,18 @@
-# Phase 2 operations
+# Phase 2 运维
 
-## State flow
+## 状态流
 
-1. Trigger Jenkins with `trigger_jenkins_build.py` and save its JSON output.
-2. Register that real trigger result with `ci_orchestrator.py register`.
-3. Jenkins calls `POST /jenkins` with an HMAC signature after the build finishes.
-4. The webhook receiver fetches the Jenkins build API and verifies all originally submitted parameters before recording success or failure.
-5. A successful matching build launches exactly one new `dsh --profile headless` session. The hourly timer repeats the same reconciliation path if Jenkins cannot reach the webhook receiver.
+1. 用 `trigger_jenkins_build.py` 触发 Jenkins 并保存其 JSON 输出。
+2. 用 `ci_orchestrator.py register` 登记该真实触发结果。
+3. 构建结束后 Jenkins 带 HMAC 签名调用 `POST /jenkins`。
+4. webhook 接收器拉取 Jenkins 构建 API，在记录成功或失败前核对所有原始提交的参数。
+5. 匹配的构建成功后启动恰好一个新的 `dsh --profile headless` 会话。Jenkins 无法触达 webhook 接收器时，每小时定时器重复同一 reconcile 路径。
 
-Without a phase-3 profile, the agent handoff remains read-only. A registration that explicitly names a trusted phase-3 profile and uses the `danger-full-access` sandbox instead invokes the fixed phase-3 runner after a verified successful build. The run state uses `queued`, `building`, `build_succeeded`, `build_failed`, and `blocked`; phase-3 results live independently under `phase3.status` so a failed OTA can never be confused with a Jenkins failure.
+没有 phase-3 profile 时，agent 交接保持只读。显式命名受信任 phase-3 profile 并使用 `danger-full-access` sandbox 的登记，会在验证构建成功后调用固定的 phase-3 runner。运行状态使用 `queued`、`building`、`build_succeeded`、`build_failed`、`blocked`；phase-3 结果独立存于 `phase3.status`，失败的 OTA 永远不会与 Jenkins 失败混淆。
 
-## Register a run
+## 登记运行
 
-Use a pipe so only a real, successful phase-1 trigger can create a state file:
+用管道保证只有真实、成功的 phase-1 触发才能创建状态文件：
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_build.py" \
@@ -23,11 +23,11 @@ python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_buil
   register --repo-dir <absolute-repository-path>
 ```
 
-`JENKINS_USER` and `JENKINS_API_TOKEN` must be present for the real trigger. The registration command rejects a phase-1 dry-run result.
+真实触发必须有 `JENKINS_USER` 与 `JENKINS_API_TOKEN`。登记命令拒绝 phase-1 dry-run 结果。
 
-## Webhook contract
+## Webhook 契约
 
-Set `CI_WEBHOOK_SECRET` only in the systemd environment file. Jenkins must send a JSON body in either form:
+只在 systemd 环境文件中设置 `CI_WEBHOOK_SECRET`。Jenkins 必须发送以下任一形式的 JSON 体：
 
 ```json
 {"job_name":"OpenHarmony-V6.1-RockChip","build_number":46}
@@ -37,28 +37,28 @@ Set `CI_WEBHOOK_SECRET` only in the systemd environment file. Jenkins must send 
 {"job":"OpenHarmony-V6.1-RockChip","build":{"number":46}}
 ```
 
-Add `X-CI-Signature: sha256=<hex-hmac-sha256-of-raw-body>`. The receiver never trusts a webhook's claimed result. It reads Jenkins' build API, then validates the tracked branch and parameters before changing state.
+添加 `X-CI-Signature: sha256=<hex-hmac-sha256-of-raw-body>`。接收器绝不信任 webhook 声称的结果。它读取 Jenkins 构建 API，在变更状态前校验跟踪的分支与参数。
 
-Bind to `127.0.0.1` by default. To receive a remote Jenkins callback, bind an explicit reachable address or place a reverse proxy in front of it. Keep HMAC verification enabled in either case.
+默认绑定 `127.0.0.1`。要接收远端 Jenkins 回调，绑定明确可达的地址或在前面放反向代理。两种情况下都保持 HMAC 校验开启。
 
-## Install the fallback timer
+## 安装兜底定时器
 
-Run once on the host that has Jenkins network access and will later control the target RK3568:
+在具备 Jenkins 网络访问、且之后会控制目标 RK3568 的主机上运行一次：
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_units.py"
 ```
 
-Fill `~/.config/openharmony-ci-orchestrator/jenkins.env` with a random `CI_WEBHOOK_SECRET` and Jenkins credentials when required. Then enable the service and hourly timer:
+在 `~/.config/openharmony-ci-orchestrator/jenkins.env` 中填入随机的 `CI_WEBHOOK_SECRET`，需要时填 Jenkins 凭据。然后启用服务与每小时定时器：
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_units.py" \
   --listen-host <reachable-host-or-ip> --enable
 ```
 
-The user service requires the machine to remain on. `loginctl enable-linger <user>` makes it survive logout; verify it with `loginctl show-user <user> -p Linger`.
+用户服务要求机器保持开机。`loginctl enable-linger <user>` 让它在登出后存活；用 `loginctl show-user <user> -p Linger` 验证。
 
-## Inspect and recover
+## 检查与恢复
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
@@ -66,13 +66,13 @@ systemctl --user status openharmony-ci-webhook.service openharmony-ci-reconcile.
 ls -1 ~/.local/state/openharmony-ci-orchestrator/runs/
 ```
 
-Do not delete an active state file to retry. Inspect its `events` and Jenkins build URL first. A failed or blocked build never launches the follow-up agent.
+不要为重试删除生效中的状态文件。先检查它的 `events` 与 Jenkins 构建 URL。失败或阻塞的构建绝不启动跟进 agent。
 
-The state files use atomic replacement and a process lock. A duplicate webhook, a timer tick, or a webhook for another queued run cannot launch a second phase-3 agent.
+状态文件使用原子替换与进程锁。重复 webhook、定时器 tick 或另一个排队运行的 webhook 都无法启动第二个 phase-3 agent。
 
-## Phase 3 registration
+## Phase 3 登记
 
-Only use this for a profile which has been reviewed and whose exact device pool is available on the host. The runner rejects all unspecified package paths and HDC serials:
+只对已审查、且其精确设备池在本机可用的 profile 使用。runner 拒绝所有未指定的包路径与 HDC serial：
 
 ```bash
 ... trigger_jenkins_build.py <verified A333 arguments> \
@@ -83,4 +83,4 @@ Only use this for a profile which has been reviewed and whose exact device pool 
     --agent-sandbox danger-full-access
 ```
 
-Read [phase3-a333.md](phase3-a333.md) before enabling this path. Set `GITLAB_HOST` and `GITLAB_PROJECT` in the same systemd environment file to receive the idempotent MR evidence note.
+启用该路径前阅读 [phase3-a333.md](phase3-a333.md)。在同一 systemd 环境文件中设置 `GITLAB_HOST` 与 `GITLAB_PROJECT`，以接收幂等的 MR 证据评论。

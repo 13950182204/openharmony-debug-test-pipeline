@@ -1,6 +1,6 @@
-# MR Description Template
+# MR 描述模板
 
-Use this template for XTS, HATS, ACTS, DCTS, test-report-related merge requests, and any MR with manual test evidence or screenshots. The first line remains the commit/MR title; the body below is used unchanged for both the commit and the MR description.
+本模板用于 XTS、HATS、ACTS、DCTS、测试报告相关 MR，以及任何带人工测试证据或截图的 MR。第一行仍是 commit/MR 标题；下面的正文原样同时用于 commit 与 MR 描述。
 
 ~~~markdown
 ## 具体:
@@ -39,12 +39,12 @@ python3 -m xdevice run ...
 <!-- 使用 --screenshot PATH 自动上传；不要把本机路径直接当作图片链接。 -->
 ~~~
 
-## Formatting Rules
+## 格式规则
 
-- Use exactly the level-2 headings and order shown above. Keep the trailing `:` so GitLab renders the headings consistently.
-- Keep commands inside a fenced `bash` block. Use inline backticks for IDs, paths, package names, and error symbols.
-- Use Markdown bullets for environment and result records instead of four-space indentation.
-- Put the uploaded image Markdown directly under `## 测试结果截图:`. The upload path must be a GitLab `/uploads/...` link, not a local `/tmp` or Windows path.
-- Keep analysis factual: include the observed failure, the root cause, the changed behavior, and the test evidence.
+- 严格使用上面展示的二级标题与顺序。保留结尾的 `:`，让 GitLab 一致渲染标题。
+- 命令放在围栏 `bash` 块内。ID、路径、包名与错误符号用行内反引号。
+- 环境与结果记录用 Markdown 列表，不要用四个空格缩进。
+- 上传的图片 Markdown 直接放在 `## 测试结果截图:` 下面。上传路径必须是 GitLab `/uploads/...` 链接，不能是本地 `/tmp` 或 Windows 路径。
+- 分析保持事实性：包含观察到的失败、根因、改变的行为与测试证据。
 
-For ordinary non-test MRs without manual evidence, use the structured title format `[动作] [芯片] [XTS] <说明>` (the chip and XTS fields are optional under the rules in `SKILL.md`) and keep the `具体:` body requirement. Once commands, results, or screenshots are recorded, use this complete Markdown format.
+没有人工证据的普通非测试 MR，使用结构化标题格式 `[动作] [芯片] [XTS] <说明>`（芯片与 XTS 字段按 `SKILL.md` 中的规则可选），并保留 `具体:` 正文要求。一旦记录了命令、结果或截图，就使用这个完整 Markdown 格式。
