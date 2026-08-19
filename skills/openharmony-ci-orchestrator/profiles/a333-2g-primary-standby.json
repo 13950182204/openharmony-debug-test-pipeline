@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "a333-2g-primary-standby",
+  "jenkins": {
+    "job": "OpenHarmony-V6.1-AllWinner",
+    "parameters": {
+      "Openharmony_Devices": ["a333_medical_dsi_800x1280"],
+      "XTS_PRODUCT_NAME": ["DHong-A333-Development-Board"],
+      "XTS_PRODUCT_MODEL": ["76A"],
+      "XTS_PRODUCT_BRAND": ["DNAKE"],
+      "XTS_PRODUCT_MANUFACTURER": ["DHong"]
+    }
+  },
+  "artifact": {
+    "relative_path": "openharmony_V6.1/out/ota/update.zip",
+    "remote_path": "/data/updater/updater_full.zip",
+    "mode": "full",
+    "source_version_property": "software_version"
+  },
+  "devices": [
+    {
+      "role": "primary",
+      "serial": "ea010e325333324247102b4ed1988ce7",
+      "product_name": "DHong-A333-Development-Board",
+      "product_model": "76A",
+      "device_tree_model": "sun65iw1"
+    },
+    {
+      "role": "standby",
+      "serial": "ea010e325333324247102b4ed1a48c99",
+      "product_name": "DHong-A333-Development-Board",
+      "product_model": "76A",
+      "device_tree_model": "sun65iw1"
+    }
+  ],
+  "reconnect_timeout_seconds": 420,
+  "poll_interval_seconds": 5
+}

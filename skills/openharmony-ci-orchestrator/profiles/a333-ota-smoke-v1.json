@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "a333-ota-smoke-v1",
+  "boards": ["a333-2g-primary-standby"],
+  "kind": "ota-smoke",
+  "description": "Checks the A333 updater result and completed normal boot after a verified OTA.",
+  "pass_criteria": ["bootevent.boot.completed=true", "updater_result=pass"]
+}
