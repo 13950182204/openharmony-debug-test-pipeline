@@ -34,8 +34,10 @@ export function buildLoopSkill(config: Config): SkillRegistration {
 
 - 状态文件: ${stateFile}（可用 /pipeline status 命令查询）
 - 状态脚本: ${scriptPath}
+- 运行日志: ~/.dsh/pipeline-runs/<日期>-<报告名>.md（每个阶段结束后把该阶段细节追加写入：报告路径、失败表、证据文件与关键日志行、根因分析、修复决策；供后续优化插件复盘）
 - 开始闭环前重置: python3 ${scriptPath} reset --file ${stateFile}
 - 每阶段结束写状态: python3 ${scriptPath} set <stage> '{json 产物}' --file ${stateFile}
+- 每阶段结束记 token 用量: python3 ${scriptPath} tokens <stage> --file ${stateFile}
 - 阶段内关键事件: python3 ${scriptPath} note <stage> '<说明>' --file ${stateFile}
 
 ## 八阶段状态机
@@ -83,7 +85,8 @@ export function buildLoopSkill(config: Config): SkillRegistration {
 
 ## 纪律
 
-- 状态文件是唯一事实来源：每个阶段结束必须写状态，否则视为该阶段未完成；
+- 状态文件是唯一事实来源：每个阶段结束必须写状态（set）+ 记 token（tokens），否则视为该阶段未完成；
+- 每个阶段结束把流程细节追加进运行日志（~/.dsh/pipeline-runs/<日期>-<报告名>.md），包括证据文件路径与关键日志行；
 - 每完成一个阶段向用户汇报进度与下一步，等用户确认后再继续；
 - 设备操作前必须 hdc list targets 确认唯一目标，禁止对未确认设备操作；
 - 不要把多个阶段塞进一次回复连续自嗨式执行——真实动作一律等待授权。

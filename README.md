@@ -59,8 +59,11 @@ Settings → 插件配置 中调整。
   只加载对应 skill，不影响其他模块。
 - **流水线状态**：`/pipeline status` 查询当前阶段与产物；`/pipeline reset` 重置。
 
-模型在每个阶段结束时通过 `scripts/pipeline_state.py`（`set`/`note`）把产物写入状态文件，
-状态文件是闭环的唯一事实来源，跨会话可续。
+模型在每个阶段结束时通过 `scripts/pipeline_state.py` 把产物（`set`）、事件（`note`）与
+**token 用量快照**（`tokens <stage>`，读取 `~/.dsh/storages/session_projcache.json` 中当前
+会话的 uncachedInput/output/cacheRead 累计）写入状态文件；状态文件是闭环的唯一事实来源，
+跨会话可续。每个阶段还把流程细节（证据路径、关键日志行、根因分析）追加写入
+`~/.dsh/pipeline-runs/<日期>-<报告名>.md` 运行日志，供后续优化插件复盘。
 
 ## 开发
 

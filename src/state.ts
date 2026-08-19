@@ -22,6 +22,19 @@ export interface PipelineState {
   /** 阶段产物：报告路径、MR IID、构建号、设备 serial、OTA 结果等 */
   artifacts: Record<string, string | number | null>
   events: PipelineEvent[]
+  /** 每阶段结束的 token 用量快照（来自 DSH session_projcache） */
+  tokenSnapshots?: TokenSnapshot[]
+}
+
+/** 一次 token 用量快照（与 scripts/pipeline_state.py 的 tokens 子命令对齐） */
+export interface TokenSnapshot {
+  at: string
+  stage: string
+  sessionId: string
+  uncachedInputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
 }
 
 export const SCHEMA_VERSION = 1
@@ -126,6 +139,13 @@ export function renderState(state: PipelineState): string {
     lines.push('最近事件:')
     for (const event of recent) {
       lines.push(`  [${event.stage}] ${event.note}`)
+    }
+  }
+  const snapshots = state.tokenSnapshots ?? []
+  if (snapshots.length > 0) {
+    lines.push('token 快照（最近 3 次）:')
+    for (const snap of snapshots.slice(-3)) {
+      lines.push(`  [${snap.stage}] in=${snap.uncachedInputTokens} out=${snap.outputTokens} cacheRead=${snap.cacheReadTokens}`)
     }
   }
   return lines.join('\n')
