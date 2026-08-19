@@ -3,6 +3,7 @@ import { Config } from './config.ts'
 import { registerVendoredSkills } from './vendor.ts'
 import { registerLoopSkill } from './loop-skill.ts'
 import { registerPipelineCommands } from './commands.ts'
+import { registerMrReviewTool } from './mr-review-tool.ts'
 
 /**
  * OpenHarmony 修改-调试-测试闭环 DSH 插件。
@@ -12,10 +13,12 @@ import { registerPipelineCommands } from './commands.ts'
  *   openharmony-ci-orchestrator / openharmony-ota-upgrade /
  *   openharmony-test-report-triage），每个均可独立调用；
  * - 注册一个闭环编排 skill（openharmony-debug-loop），八阶段状态机串联各模块；
- * - 注册 /pipeline status|reset 命令，跨会话查询/重置流水线状态。
+ * - 注册 /pipeline status|reset 命令，跨会话查询/重置流水线状态；
+ * - 注册 mr_review_six 工具：六维 MR 审查一键执行，子代理模型按类别自动分级
+ *   （复杂类不降级、maintainability 降一档、下限为档位表最低档）。
  */
 export const name = 'openharmony-debug-test-pipeline'
-export const inject = ['skills', 'commands']
+export const inject = ['skills', 'commands', 'tools', 'subagents']
 export { Config }
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -23,5 +26,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerVendoredSkills(ctx, resolved)
   registerLoopSkill(ctx, resolved)
   registerPipelineCommands(ctx, resolved.stateFile)
+  registerMrReviewTool(ctx, config)
   ctx.logger.info('openharmony-debug-test-pipeline: OpenHarmony 调测闭环流水线插件加载完成')
 }
