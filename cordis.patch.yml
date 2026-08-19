@@ -1,0 +1,8 @@
+# openharmony-debug-test-pipeline bundle patch
+#
+# 安装：dsh plugin --profile <name> add openharmony-debug-test-pipeline
+# 命令会识别 dsh.bundle 声明并把本包追加进 profile 的 bundles 层栈。
+# 插件加载后注册：五个 vendored 调测 skill + 一个闭环编排 skill + /pipeline 命令。
+- insert:
+    - id: oh-debug-pipeline
+      name: 'openharmony-debug-test-pipeline'

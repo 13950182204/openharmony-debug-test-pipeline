@@ -1,0 +1,14 @@
+# 依赖与构建产物
+node_modules/
+lib/
+dist/
+
+# 运行期状态（不入库）
+*.log
+pipeline-state.json
+
+# 编辑器与系统文件
+.DS_Store
+*.swp
+__pycache__/
+*.pyc
