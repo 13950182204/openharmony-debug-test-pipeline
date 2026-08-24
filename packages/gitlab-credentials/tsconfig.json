@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "paths": {
+      "schemastery": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/schemastery/lib/types/index.d.ts"],
+      "@deepseek-ai/cordis": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/schemastery": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/schemastery/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-settings": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-settings/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-tools": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-tools/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-host-webserver": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-host-webserver/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-system-prompt": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-llm": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-llm/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-runtime/client": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-settings/client": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

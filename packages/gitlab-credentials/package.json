@@ -1,0 +1,66 @@
+{
+  "name": "@linxin666/dsh-gitlab-credentials",
+  "description": "GitLab credentials for the dsh web GUI: per-host token storage (~/.dsh/gitlab-credentials.json, 0600), validation against the GitLab API, automatic glab CLI sync, a settings-page section (credentials + MR preferences), and a read-only agent status surface. Tokens never enter conversation logs.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "scripts": {
+    "postinstall": "node scripts/link-runtime-deps.mjs",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/store.smoke.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dependencies": {},
+  "vendored": {
+    "@deepseek-ai/dsh-settings": "runtime tree",
+    "@deepseek-ai/dsh-tools": "runtime tree",
+    "@deepseek-ai/dsh-llm": "runtime tree",
+    "@deepseek-ai/dsh-host-webserver": "runtime tree",
+    "@deepseek-ai/dsh-system-prompt": "runtime tree",
+    "schemastery": "runtime tree",
+    "react": "runtime tree",
+    "react-dom": "runtime tree"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2"
+  },
+  "license": "MIT"
+}

@@ -14,6 +14,7 @@ from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 DEFAULTS_PATH = SKILL_DIR / "assets" / "defaults.env"
+CREDENTIAL_STORE = Path.home() / ".dsh" / "gitlab-credentials.json"
 TEST_MARKERS = ("XTS", "HATS", "ACTS", "DCTS")
 ACTION_TYPES = ("修改", "优化", "升级", "新增", "修复", "同步", "回退", "重构", "适配", "迁移", "移除")
 CHIP_TAGS = ("RK3568", "A333/A537")
@@ -322,12 +323,67 @@ def ensure_repo(repo):
 
 def ensure_glab_auth(repo, hostname, api_protocol):
     result = run(["glab", "auth", "status", "--hostname", hostname], repo, check=False)
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no authenticated token found"
-        raise MrError(
-            f"GitLab authentication failed for {hostname} ({api_protocol} API): {detail}. "
-            f"Authenticate once with glab auth login --hostname {hostname} --api-protocol {api_protocol} --use-keyring"
-        )
+    if result.returncode == 0:
+        return
+    # Fallback: auto-login from the dsh-gitlab-credentials plugin store; the
+    # token is written to glab's STDIN, never to the command line or logs.
+    if glab_login_from_store(hostname, api_protocol):
+        result = run(["glab", "auth", "status", "--hostname", hostname], repo, check=False)
+        if result.returncode == 0:
+            return
+    detail = result.stderr.strip() or result.stdout.strip() or "no authenticated token found"
+    hint = ("Authenticate once with glab auth login --hostname {0} --api-protocol {1} --use-keyring, "
+            "or save the token for this host in 设置 > GitLab 凭据.").format(hostname, api_protocol)
+    raise MrError(
+        f"GitLab authentication failed for {hostname} ({api_protocol} API): {detail}. {hint}"
+    )
+
+
+def load_credential_store():
+    """Read the dsh-gitlab-credentials store when present (never logs tokens)."""
+    try:
+        if not CREDENTIAL_STORE.exists():
+            return None
+        doc = json.loads(CREDENTIAL_STORE.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def glab_login_from_store(hostname, api_protocol):
+    """Log the stored token into glab for one host; token flows over STDIN."""
+    doc = load_credential_store()
+    if not doc:
+        return False
+    hosts = doc.get("hosts") if isinstance(doc, dict) else None
+    record = hosts.get(hostname) if isinstance(hosts, dict) else None
+    if not isinstance(record, dict):
+        return False
+    token = record.get("token")
+    if not isinstance(token, str) or not token.strip():
+        return False
+    protocol = record.get("apiProtocol")
+    if protocol not in ("http", "https"):
+        protocol = api_protocol
+    api_host = record.get("apiHost") or hostname
+    git_protocol = record.get("gitProtocol")
+    if git_protocol not in ("ssh", "https"):
+        git_protocol = "ssh"
+    result = subprocess.run(
+        ["glab", "auth", "login", "--hostname", hostname, "--api-host", api_host,
+         "--api-protocol", protocol, "--git-protocol", git_protocol, "--stdin"],
+        input=f"{token.strip()}\n", text=True, capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def load_mr_preferences():
+    """GUI-configured MR defaults from the dsh-gitlab-credentials store."""
+    doc = load_credential_store()
+    if not doc:
+        return {}
+    prefs = doc.get("mrPreferences")
+    return prefs if isinstance(prefs, dict) else {}
 
 
 def ensure_index_integrity(repo):
@@ -735,13 +791,14 @@ def current_branch(repo):
 def execute(args):
     repo = Path(args.repo).resolve()
     defaults = load_defaults(Path(args.defaults).resolve() if args.defaults else DEFAULTS_PATH)
+    prefs = load_mr_preferences()
     remote = args.remote or defaults.get("REMOTE", "origin")
     base_version = args.base_version or defaults.get("BASE_VERSION", "v6.1.0.31")
-    target = args.target_branch or defaults.get("TARGET_BRANCH", f"{base_version}_release")
+    target = args.target_branch or prefs.get("targetBranch") or defaults.get("TARGET_BRANCH", f"{base_version}_release")
     base_ref = args.base_ref or defaults.get("WORKTREE_BASE_REF", f"{remote}/{target}")
     iteration = args.iteration_version or defaults.get("ITERATION_VERSION", "auto")
     fallback = args.fallback_iteration or defaults.get("FALLBACK_ITERATION_VERSION", "v1.1.x")
-    assignee = normalize_assignee(args.assignee or defaults.get("ASSIGNEE", "cx"))
+    assignee = normalize_assignee(args.assignee or prefs.get("assignee") or defaults.get("ASSIGNEE", "cx"))
     hostname = args.hostname or defaults.get("GITLAB_HOST", "")
     api_protocol = defaults.get("API_PROTOCOL", "https")
     milestone_mode = defaults.get("MILESTONE_MATCH_MODE", "branch_then_message")
@@ -761,7 +818,7 @@ def execute(args):
     ensure_screenshot_files(screenshot_paths)
     title_info = parse_title(subject)
     related = validate_message(subject, body, files, screenshot_paths)
-    labels = resolve_labels(title_info, args.label)
+    labels = resolve_labels(title_info, args.label or prefs.get("labels") or None)
     ensure_only_files_changed(repo, files)
     ensure_files_changed(repo, files)
 
@@ -774,7 +831,7 @@ def execute(args):
     project = encoded_project_path(repo, remote)
     ensure_labels_exist(repo, hostname, project, labels)
     milestone, milestone_reason = resolve_milestone(
-        repo, hostname, project, args.milestone, branch, subject, body, milestone_mode
+        repo, hostname, project, args.milestone or prefs.get("milestone") or None, branch, subject, body, milestone_mode
     )
     if milestone_required and milestone is None:
         raise MrError("No milestone matched and MILESTONE_REQUIRED=true")
