@@ -21,8 +21,8 @@ GitLab 凭据管理插件（dsh web GUI）：按主机保存访问令牌（0600 
 
 ```bash
 # 从仓库目录（开发）
-cd <repo>/dsh-gitlab-credentials
-pnpm install && npx tsdown          # 构建 lib/index.js + lib/client.js
+cd <repo>/packages/gitlab-credentials
+pnpm install && npx tsdown          # postinstall 自动 vendoring runtime SDK；随后构建
 dsh plugin --profile web add link:$(pwd)
 
 # 发布版（发布到 npm 后）
@@ -33,7 +33,7 @@ dsh plugin --profile web add @linxin666/dsh-gitlab-credentials@latest
 
 ## Runtime 依赖 vendoring（重要）
 
-`@deepseek-ai/*` host SDK（`dsh-settings` / `dsh-tools` 等）**没有发布到公开 npm registry**，由 DSH runtime 内置携带。插件作为 `link:` 本地包被 cordis 装载时，Node ESM 从插件的**真实路径**（如 `/home/cx/.../dsh-gitlab-credentials`）解析 import——缺少运行时依赖会以 `MODULE_NOT_FOUND` 直接拖垮整个 profile 启动（曾导致 `Failed to load plugins`，见 DSH 知识库故障记录）。
+`@deepseek-ai/*` host SDK（`dsh-settings` / `dsh-tools` 等）**没有发布到公开 npm registry**，由 DSH runtime 内置携带。插件作为 `link:` 本地包被 cordis 装载时，Node ESM 从插件的**真实路径**（如 `<repo>/packages/gitlab-credentials`）解析 import——缺少运行时依赖会以 `MODULE_NOT_FOUND` 直接拖垮整个 profile 启动（曾导致 `Failed to load plugins`，见 DSH 知识库故障记录）。
 
 因此 `package.json` 的 **`postinstall`**（`scripts/link-runtime-deps.mjs`）会把运行时 SDK 以符号链接 vendoring 进插件自身 `node_modules`，指向当前 `~/.dsh/runtime/<ver>/node_modules/.pnpm/node_modules/@deepseek-ai`（目标包已在该树内，传递依赖随之全部可解析）。`pnpm install` 自动执行；删除插件目录后重新 link 即可。vendored 清单见 package.json 的 `"vendored"` 字段（自定义元数据，非依赖声明）。
 
