@@ -25,10 +25,14 @@ export default defineConfig([
   {
     entry: { client: 'src/client/index.ts' },
     outDir: 'lib',
-    format: 'esm',
+    // rc.2 client-modules consumes lazy CJS factories registered through
+    // ModuleLoader.load; a plain ESM export is fetched but never registered.
+    format: 'cjs',
     platform: 'browser',
     target: 'es2022',
     deps: { neverBundle: [...neverBundle, 'react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'] },
+    banner: 'window.__ModuleLoader__.load({ id: "@linxin666/dsh-gitlab-credentials", factory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n',
+    footer: '\n\t\treturn module.exports;\n\t}\n});',
     dts: { entry: 'src/client/index.ts' },
     outExtension,
   },
