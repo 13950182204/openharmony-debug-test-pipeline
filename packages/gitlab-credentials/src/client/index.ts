@@ -5,9 +5,22 @@
  * editor. Failure policy: registration problems are logged, never thrown —
  * an external plugin must not take the GUI down.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { GitlabSection } from './panel.tsx'
+
+type ClientContext = Context & {
+  slots: {
+    inject: (name: string, mount: () => void) => void
+    register: (options: {
+      name: string
+      id: string
+      order: number
+      label: () => string
+      locale: string
+    }, component: typeof GitlabSection) => void
+  }
+}
 
 /** Required services: the slot host plus locale (if provided). */
 export const inject = ['slots', 'locale']

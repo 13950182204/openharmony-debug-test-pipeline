@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Vendor the rc.2-consistent runtime SDK packages into this plugin's own
+ * Vendor the active DSH runtime SDK packages into this plugin's own
  * node_modules as symlinks. @deepseek-ai/* host packages are not published to
  * the public npm registry (the dsh runtime carries them), so a link: plugin
  * must not rely on npm resolution walking up to the runtime tree — Node
@@ -29,10 +29,6 @@ function runtimeNodeModules() {
     .map(name => join(RUNTIME_GLOB, name))
     .filter(path => statSync(path).isDirectory())
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
-  for (const fallback of ['dsh-011rc2', 'dsh-011rc1', 'dsh-011rc2']) {
-    const direct = join(RUNTIME_GLOB, fallback, 'node_modules', '.pnpm', 'node_modules', '@deepseek-ai')
-    if (existsSync(direct)) return direct
-  }
   for (const entry of entries) {
     const candidate = join(entry, 'node_modules', '.pnpm', 'node_modules', '@deepseek-ai')
     if (existsSync(candidate)) return candidate

@@ -10,7 +10,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -28,7 +28,7 @@ export const name = PLUGIN_ID
 export const inject = ['webServer', 'tools', 'systemPrompt']
 
 /** Settings namespace of the plugin (web settings surface edits live here). */
-export const SETTINGS_NAMESPACE = settingsNamespace(SETTINGS_NS)
+export const SETTINGS_NAMESPACE = SETTINGS_NS
 
 /** Plugin config. */
 export interface Config {
@@ -98,12 +98,14 @@ function applyImpl(ctx: Context, config?: Config): void {
     )
   }
 
-  installSettingsSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
-    setSource: (source) => {
-      current = source
-      sync()
-    },
-    onChange: sync,
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
+      setSource: (source) => {
+        current = source
+        sync()
+      },
+      onChange: sync,
+    })
   })
 
   // Initial registration from the composition entry (deployments with no
