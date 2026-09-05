@@ -42,6 +42,23 @@ dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
 > 注意：若 profile 的 `cordis.patch.yml` 里已手工 mount 过同名行，先移除，
 > 避免插件双实例。
 
+### DSH 运行时依赖
+
+`@deepseek-ai/dsh-tools` 导出的调度器使用进程内 `Symbol` 标识；插件必须与
+正在运行的 DSH 使用同一份模块实例，不能只满足“版本号相同”。本仓库的
+`postinstall`/`link-runtime-deps` 会把插件内的 `dsh-tools` 链到当前
+`~/.dsh/profiles/node_modules` 共享运行时。升级 DSH 后重新构建插件并执行：
+
+```bash
+pnpm install
+pnpm run link-runtime-deps
+systemctl --user restart deepseek-dsh-web.service
+```
+
+若共享运行时尚未生成，先用目标 DSH 运行一次 `dsh --profile web --dump-config`。
+不要在 `/pipeline` 后面放自然语言；该命令只接受 `status` 或 `reset`，实际闭环
+任务请直接作为普通对话发送。
+
 ## 配置
 
 | 配置项 | 默认值 | 说明 |

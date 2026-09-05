@@ -28,6 +28,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "postinstall": "node scripts/link-runtime-dsh-tools.mjs",
+    "link-runtime-deps": "node scripts/link-runtime-dsh-tools.mjs",
     "build": "rm -rf lib && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -37,19 +39,17 @@
     "js-yaml": "^4.1.0",
     "schemastery": "^3.18.0"
   },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-commands": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-skill": "^0.1.0-rc.7"
+  "vendored": {
+    "@deepseek-ai/dsh-tools": "runtime tree"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-commands": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-skill": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-commands": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-subagent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
