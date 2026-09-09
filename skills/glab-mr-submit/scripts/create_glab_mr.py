@@ -562,11 +562,43 @@ def ensure_labels_exist(repo, hostname, project, labels):
         raise MrError(f"Required GitLab labels do not exist: {', '.join(missing)}")
 
 
+def _is_blank_or_dark_image(path):
+    """Return True if the PNG/JPEG is mostly dark/near-blank (a broken or black screenshot).
+
+    Uses PIL if available; skips silently (returns False) when PIL is missing or the
+    file is not a decodable image, so the check never blocks a legitimate upload.
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return False
+    try:
+        with Image.open(path) as im:
+            im = im.convert("L")
+            im.thumbnail((256, 256))
+            gray = list(im.getdata())
+            if not gray:
+                return False
+            mean_lum = sum(gray) / len(gray)
+            dark_frac = sum(1 for g in gray if g < 40) / len(gray)
+            # A readable card has light background + dark text; a blank/black render
+            # is dominated by near-black pixels (e.g. mean < 40 or > 50% dark).
+            return mean_lum < 40 or dark_frac > 0.5
+    except Exception:
+        return False
+
+
 def ensure_screenshot_files(screenshot_paths):
     for item in screenshot_paths:
         source = Path(item).expanduser().resolve()
         if not source.is_file():
             raise MrError(f"Screenshot file does not exist: {source}")
+        if _is_blank_or_dark_image(source):
+            raise MrError(
+                f"Screenshot appears to be a blank/black image (mean luminance too low): {source}. "
+                "Refuse to submit a black screenshot; re-render it (ensure a light background + text) "
+                "or remove the image before retrying."
+            )
 
 
 def current_user(repo, hostname):

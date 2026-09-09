@@ -24,7 +24,7 @@ from urllib.request import (HTTPCookieProcessor, HTTPRedirectHandler, Request,
 DEFAULT_BASE_URL = "http://192.168.13.121:8080"
 DEFAULT_JOB = "OpenHarmony-V6.1-RockChip"
 REQUIRED_PARAMETERS = ("FIRMWARE_BRANCH", "BUILD_MODE", "FIRMWARE_TYPE")
-BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9._/-]+$")
+BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9._/\-\u4e00-\u9fff]+$")
 SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 PARAMETER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 REDIRECT_CODES = frozenset((301, 302, 303, 307, 308))
@@ -90,7 +90,8 @@ def request_json(opener, request, timeout):
         raise JenkinsError("Jenkins returned invalid JSON") from error
 
 
-def job_metadata(opener, job_url, headers, timeout):
+def job_metadata(opener, job_url, headers, timeout, required=None):
+    required = tuple(required) if required is not None else REQUIRED_PARAMETERS
     tree = "name,buildable,property[parameterDefinitions[name]]"
     url = f"{job_url}/api/json?{urlencode({'tree': tree})}"
     request = Request(url, headers={**headers, "Accept": "application/json"})
@@ -105,13 +106,13 @@ def job_metadata(opener, job_url, headers, timeout):
             name = definition.get("name")
             if isinstance(name, str):
                 names.add(name)
-    missing = [name for name in REQUIRED_PARAMETERS if name not in names]
+    missing = [name for name in required if name not in names]
     if missing:
         raise JenkinsError(
             "Jenkins job is missing required parameters: " + ", ".join(missing)
         )
     return {"name": payload.get("name"), "buildable": True,
-            "parameters": sorted(names)}
+            "parameters": sorted(names), "required": list(required)}
 
 
 def crumb_headers(opener, base_url, headers, timeout):
@@ -205,6 +206,8 @@ def parse_args():
     parser.add_argument("--mr-iid")
     parser.add_argument("--build-mode", choices=("INCREMENTAL", "FULL"), default="INCREMENTAL")
     parser.add_argument("--firmware-type", default="XTS")
+    parser.add_argument("--required-parameters", default=None, metavar="NAME[,NAME...]",
+        help="Comma-separated parameter name set the job must declare (default: FIRMWARE_BRANCH,BUILD_MODE,FIRMWARE_TYPE)")
     parser.add_argument("--parameter", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--verify-job", action="store_true", help="Perform a read-only job metadata check")
     parser.add_argument("--dry-run", action="store_true", help="Print the request without POSTing to Jenkins")
@@ -239,7 +242,12 @@ def main():
     job_url = make_url(args.base_url, args.job)
     metadata = None
     if args.verify_job or not args.dry_run:
-        metadata = job_metadata(opener, job_url, headers, args.timeout_seconds)
+        required = (args.required_parameters or ",".join(REQUIRED_PARAMETERS)).split(",")
+        metadata = job_metadata(opener, job_url, headers, args.timeout_seconds, required)
+        # Strict-parameter jobs reject undeclared fields: keep only parameters the
+        # job declares (the script's own semantic fields stay in the record output).
+        declared = set(metadata["parameters"])
+        params = {name: value for name, value in params.items() if name in declared}
 
     result = {
         "phase": 1,

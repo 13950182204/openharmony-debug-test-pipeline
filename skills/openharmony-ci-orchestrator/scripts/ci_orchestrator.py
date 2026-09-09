@@ -124,13 +124,31 @@ def safe_url(value: Any, expected_origin: tuple[str, str] | None = None) -> str:
         raise OrchestratorError(f"Invalid Jenkins URL: {value!r}")
     origin = (parsed.scheme, parsed.netloc)
     if expected_origin is not None and origin != expected_origin:
-        raise OrchestratorError(f"Jenkins URL origin does not match the tracked job: {value!r}")
+        # Some Jenkins deployments return a self-referenced origin (its configured
+        # Jenkins URL) that differs from the access address; allow an explicit
+        # comma-separated JENKINS_TRUSTED_ORIGINS allowlist on top of the tracked origin.
+        # Entries may be "host:port" (http assumed) or "http(s)://host:port".
+        trusted = frozenset(
+            parsed_origin(item)
+            for item in os.environ.get("JENKINS_TRUSTED_ORIGINS", "").split(",")
+            if item.strip()
+        )
+        if origin not in trusted:
+            raise OrchestratorError(f"Jenkins URL origin does not match the tracked job: {value!r}")
     return value.rstrip("/")
 
 
 def origin_of(url: str) -> tuple[str, str]:
     parsed = urlparse(url)
     return parsed.scheme, parsed.netloc
+
+
+def parsed_origin(value: str) -> tuple[str, str]:
+    """Normalize a trusted-origin entry to a (scheme, netloc) tuple."""
+    value = value.strip()
+    if "://" in value:
+        return origin_of(value)
+    return ("http", value)
 
 
 def text_map(value: Any, name: str) -> dict[str, str]:
@@ -490,7 +508,38 @@ def reconcile_one(
             state["status"] = "blocked"
             add_event(state, "blocked", "No Jenkins queue URL or build URL is available")
             return {"run_id": state["run_id"], "status": state["status"], "action": "blocked"}
-        queue = queue_metadata(opener, safe_url(queue_url, origin), headers, timeout)
+        try:
+            queue = queue_metadata(opener, safe_url(queue_url, origin), headers, timeout)
+        except JenkinsError as queue_err:
+            if "404" not in str(queue_err):
+                raise
+            queue = {}
+            # 队列项已被消费(分配构建后 queue/item/<id> 返回 404):按 queueId 从作业构建列表找回构建号。
+            queue_id = safe_url(queue_url, origin).rstrip("/").rsplit("/", 1)[-1]
+            job_url = safe_url(trigger["job_url"], origin)
+            lookup = request_json(
+                opener,
+                Request(
+                    f"{job_url.rstrip('/')}/api/json?tree=builds%5Bnumber,building,result,queueId%5D",
+                    headers=headers,
+                ),
+                timeout,
+            )
+            matched = next(
+                (b for b in lookup.get("builds", []) if str(b.get("queueId")) == str(queue_id)),
+                None,
+            )
+            if matched is None:
+                add_event(
+                    state, "queue_unresolved",
+                    f"Queue item {queue_id} is gone and no matching Jenkins build was found",
+                )
+                return {"run_id": state["run_id"], "status": "queued", "action": "queue_unresolved"}
+            build_number = int(matched["number"])
+            build_url = expected_build_url(trigger["job_url"], build_number)
+            trigger["build_url"] = build_url
+            trigger["build_number"] = build_number
+            add_event(state, "queue_consumed", f"Queue item {queue_id} assigned to build #{build_number}")
         if queue.get("cancelled"):
             state["status"] = "build_failed"
             state["build"]["result"] = "CANCELLED"
@@ -499,12 +548,17 @@ def reconcile_one(
         executable = queue.get("executable") or {}
         number = executable.get("number")
         url = executable.get("url")
-        if not isinstance(number, int) or not isinstance(url, str):
+        if queue and not isinstance(number, int):
             state["status"] = "queued"
             add_event(state, "queue_pending", "Jenkins has not assigned a build number")
             return {"run_id": state["run_id"], "status": state["status"], "action": "queue_pending"}
-        build_number = number
-        build_url = safe_url(url, origin)
+        if queue and build_number is None and isinstance(number, int) and isinstance(url, str):
+            build_number = number
+            # Jenkins may return its self-referenced URL (configured Jenkins URL) for the
+            # executable; after origin validation, rewrite to the tracked access origin so
+            # the follow-up API reads resolve from this host.
+            executable_url = safe_url(url, origin)
+            build_url = f"{origin[0]}://{origin[1]}{urlparse(executable_url).path}"
 
     if candidate_build_number is not None and build_number != candidate_build_number:
         return {"run_id": state["run_id"], "status": status, "action": "ignored_other_build"}

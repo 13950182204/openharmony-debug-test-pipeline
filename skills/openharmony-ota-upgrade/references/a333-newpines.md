@@ -31,6 +31,9 @@ bash device/board/seed/a333_newpines/tools/make_ota_package.sh \
   hdc -t <serial> shell 'param get const.product.software.version; param get const.ohos.fullname'
   ```
 
+- ⚠️ **版本域（版本检查失败的头号原因）**：updater 的 `CheckVersion`（`base/update/updater/services/updater_preprocess.cpp`）用 `const.product.software.version`（产品版本，如 `1.3.0`）与包的 `version_list`（来自 `VERSION.mbn`）**逐行精确比较**。因此 `VERSION.mbn` 必须包含该产品软件版本；只写 OS 版本（如 `OpenHarmony 6.1.0.31`）会导致 `Version Check Fail`。产品版本与 OS 版本可分处一行，updater 会逐行匹配。`ota_preflight.sh --device-serial <serial>` 会在投递前做该交叉校验（不匹配即报错，并提示改 `VERSION.mbn`）。
+- ⚠️ **hdc.exe 路径**：`hdc.exe` 是 Windows 二进制，`file send` 的**本地路径必须是 Windows 路径**（如 `D:\\...\\update.zip`）；Linux/WSL 路径（如 `/mnt/d/...`）会报 `no such file or directory`。投递前把包复制到 Windows 可见路径（`ota-a333.sh` 已处理）。
+
 - 更换签名密钥要求设备上的 updater 镜像包含匹配的验证证书。仅重新打包无法修复证书不匹配。
 
 ## 全量 OTA 投递

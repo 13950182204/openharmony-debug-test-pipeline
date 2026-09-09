@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=8787)
     parser.add_argument("--enable", action="store_true", help="Reload, enable, and start units after writing them")
+    parser.add_argument("--reconcile-timer", default="hourly",
+        help="systemd OnCalendar/OnUnitActiveSec expression for the reconcile timer (default: hourly)")
     return parser.parse_args()
 
 
@@ -40,6 +42,9 @@ def main() -> int:
     args = parse_args()
     if not 1 <= args.listen_port <= 65535:
         raise SystemExit("listen-port must be 1 to 65535")
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9:*/-]+", args.reconcile_timer):
+        raise SystemExit("reconcile-timer must be a plain systemd OnCalendar expression (letters/digits/*:/ -)")
     skill_dir = Path(__file__).resolve().parents[1]
     orchestrator = skill_dir / "scripts/ci_orchestrator.py"
     state_dir = Path(args.state_dir).expanduser().resolve()
@@ -76,8 +81,8 @@ def main() -> int:
         f"ExecStart={command_prefix} reconcile --state-dir {unit_arg(str(state_dir))}\n"
     )
     timer = (
-        "[Unit]\nDescription=Hourly OpenHarmony CI Jenkins reconciliation\n\n"
-        "[Timer]\nOnCalendar=hourly\nPersistent=true\nRandomizedDelaySec=5m\n"
+        "[Unit]\nDescription=OpenHarmony CI Jenkins reconciliation\n\n"
+        "[Timer]\nOnCalendar=" + args.reconcile_timer + "\nPersistent=true\nRandomizedDelaySec=1m\n"
         "Unit=openharmony-ci-reconcile.service\n\n[Install]\nWantedBy=timers.target\n"
     )
     write_if_changed(unit_dir / "openharmony-ci-webhook.service", webhook)

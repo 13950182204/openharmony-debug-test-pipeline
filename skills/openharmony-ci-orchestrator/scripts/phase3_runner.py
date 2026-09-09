@@ -415,6 +415,56 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
         return attempt
 
 
+def regression_ui_landscape_control_center(
+    board_profile: dict[str, Any], regression: dict[str, Any], serial: str,
+) -> dict[str, Any]:
+    """固定实现的功能回归:横屏(orientation=2 重启)下拉右侧控制中心,断言标题与亮度滑块可见。
+    由受信任 kind 'ota-ui-landscape-control-center' 触发;不读取 MR/参数文本,仅按本函数执行。"""
+    evidence: dict[str, Any] = {"actions": []}
+    try:
+        # 1) 切换到横屏并重启等待回连
+        hdc(serial, "shell", "param set persist.sys.orientation 2", check=False)
+        hdc(serial, "shell", "reboot", check=False)
+        deadline = time.time() + int(board_profile.get("reconnect_timeout_seconds", 420))
+        booted = False
+        while time.time() < deadline:
+            time.sleep(int(board_profile.get("poll_interval_seconds", 5)))
+            if serial in listed_targets():
+                try:
+                    if hdc(serial, "shell", "param get persist.sys.orientation", check=False).strip().endswith("2"):
+                        if hdc(serial, "shell", "param get bootevent.boot.completed", check=False).strip().endswith("true"):
+                            booted = True
+                            break
+                except Phase3Error:
+                    continue
+        if not booted:
+            return {"id": regression["id"], "status": "FAIL", "device": serial,
+                    "evidence": {"error": "device did not return with orientation=2 after reboot"}}
+        # 2) 右上角下拉打开控制中心
+        hdc(serial, "shell", "uitest uiInput swipe 1150 2 1150 600 2000", check=False)
+        time.sleep(2)
+        hdc(serial, "shell", "uitest dumpLayout -p /data/local/tmp/cc_layout.json", check=False)
+        with tempfile.TemporaryDirectory() as td:
+            local = Path(td) / "cc_layout.json"
+            subprocess.run(
+                ["hdc", "-t", serial, "file", "recv", "/data/local/tmp/cc_layout.json", str(local)],
+                check=False, capture_output=True, timeout=60,
+            )
+            layout = local.read_text(encoding="utf-8", errors="ignore") if local.exists() else ""
+        texts = re.findall(r'"text"\s*:\s*"([^"]*)"', layout)
+        texts += re.findall(r'"content"\s*:\s*"([^"]*)"', layout)
+        joined = "\n".join(texts)
+        has_title = "控制中心" in joined
+        has_brightness = "亮度" in joined or "WLAN" in joined
+        evidence.update({"has_title": has_title, "has_brightness": has_brightness,
+                         "layout_texts": texts[:30]})
+        status = "PASS" if has_title and has_brightness else "FAIL"
+        return {"id": regression["id"], "status": status, "device": serial, "evidence": evidence}
+    except Phase3Error as error:
+        return {"id": regression["id"], "status": "FAIL", "device": serial,
+                "evidence": {"error": str(error), **evidence}}
+
+
 def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: dict[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     smoke = read_profile("a333-ota-smoke-v1")
@@ -423,6 +473,10 @@ def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: 
         regression = smoke if profile_id == smoke["id"] else read_profile(profile_id)
         if profile["id"] not in regression.get("boards", []):
             raise Phase3Error(f"Regression profile {profile_id} is not allowed for {profile['id']}")
+        serial = device["serial"]
+        if regression.get("kind") == "ota-ui-landscape-control-center":
+            results.append(regression_ui_landscape_control_center(profile, regression, serial))
+            continue
         if regression.get("kind") != "ota-smoke":
             raise Phase3Error(f"Regression profile {profile_id} has no trusted runner implementation")
         serial = device["serial"]

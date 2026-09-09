@@ -1,0 +1,42 @@
+{
+  "name": "@linxin666/openharmony-issue-pipeline",
+  "description": "OpenHarmony GitLab Issue 驱动看板流水线 DSH 插件:定期抓取 Assignee 相关 issue、按标签映射工作区/分支、按 Due date 分级模型、八阶段闭环处理并同步 DSH 任务看板与 issue 评论。父插件 openharmony-debug-test-pipeline 的子插件(仅引用其 skill,不 import 其代码)。",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "skills",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "build": "rm -rf lib && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:python": "python3 -m unittest discover -s scripts/tests -v"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,13 @@
+# openharmony-issue-pipeline bundle patch
+#
+# 父插件 openharmony-debug-test-pipeline 的子插件(与父插件同装于 web profile):
+# - 注册 vendored skill openharmony-issue-pipeline(GitLab Issue 驱动看板流水线编排);
+# - 注册 /issue status 命令(看板↔issue 对照,只读)。
+# 本插件不 import 父插件代码;其 skill 正文通过 `skill` 工具按名加载父插件的
+# openharmony-debug-loop / glab-mr-submit / karpathy-guidelines /
+# openharmony-ci-orchestrator / openharmony-ota-upgrade /
+# openharmony-test-report-triage 模块 skill,运行期与插件 `{{PARENT_PLUGIN_DIR}}`
+# 指向父插件根目录下的 scripts/pipeline_state.py 等脚本。
+- insert:
+    - id: openharmony-issue-pipeline
+      name: 'openharmony-issue-pipeline'

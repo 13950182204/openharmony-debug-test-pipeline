@@ -69,6 +69,16 @@ XTS/HATS/ACTS/DCTS/测试报告相关修复使用同样的标题语法：
 
 `create_glab_mr.py` 把解析后的标签传给 `glab mr create --label`。可选的 `--milestone` 接受生效中的里程碑标题、全局 ID 或 IID。未提供时，脚本先用生成的源分支、再用标题/正文，与生效中的里程碑版本（如 `V1.2.0`）匹配；`v1.2.x` 可能匹配唯一的 `V1.2.*` 里程碑。无匹配、有歧义或冲突时保持里程碑未设置，不阻塞提交。仅当项目明确要求缺失匹配即失败时，才设置 `MILESTONE_REQUIRED=true`。
 
+### 单 commit 原则
+
+一个 MR 原则上只包含一个 commit（一次提交即完整修复）。规则：
+
+- 非必要不拆分 commit：不要为了"记录过程"提交多个 commit（例如"初始修复 → 审查修复 → 兜底加固"）。过程信息写进 commit 正文与 MR 描述即可。
+- 创建 MR 时即交付完整的单 commit（`--files` 一次提交全部改动）。
+- 创建后的审查修复：**优先 `git commit --amend`** 或对未合入的源分支执行 squash（`git reset --soft <base>` 后重新提交），再 `--force-with-lease` 推送；只有修复轮已完成且 MR 已评估为合入前状态时，才接受少量（≤2）补充 commit，但最终合并前应压平。
+- 分支历史被改写（force push）只允许用于**无人合入/无其他协作者依赖的源分支**，且必须 `--force-with-lease`；收尾用 GitLab API 验证 `commits` 数量为 1 且变更路径与请求一致。
+- 例外：真正语义独立的共享夹具 MR 不合并（见上文"共享测试夹具"节）——那是另一个 MR，不是同一 MR 的多个 commit。
+
 ## 分支与 MR 默认值
 
 从 `assets/defaults.env` 加载默认值：
@@ -243,6 +253,8 @@ command
 ~~~
 
 无测试证据的普通改动仍需要结构化标题语法与 `具体:`，但不需要标准记录。一旦包含人工测试、命令或 `--screenshot`，就使用完整 Markdown 记录，让 GitLab 一致渲染每个小节。
+
+**截图链接规范**：消息正文的"测试结果截图"小节**不要手写任何本地路径图片行**（如 `![..](/tmp/x.png)`、`![..](D:\...)`）——`create_glab_mr.py --screenshot PATH` 成功上传后会把 `/uploads/...` 链接追加到该小节；手写的本地路径会被原样保留为 broken image。上传完成后用 GitLab API 校验描述中截图小节只含 `/uploads/` 链接（且 HTTP 200 可访问），并复查 `![...](/tmp/...)` 不残留。
 
 ## 安全检查
 

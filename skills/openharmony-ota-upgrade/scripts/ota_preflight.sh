@@ -2,7 +2,10 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <ota-package.zip>" >&2
+    echo "Usage: $0 <ota-package.zip> [--device-serial <serial>] [--hdc <path>]" >&2
+    echo "  --device-serial  if given, cross-check the package version_list against the device's" >&2
+    echo "                   const.product.software.version (updater CheckVersion does an exact match)" >&2
+    echo "  --hdc            path to hdc (default: hdc on PATH)" >&2
     exit 2
 }
 
@@ -15,11 +18,20 @@ warn() {
     echo "WARN: $*" >&2
 }
 
-[ "$#" -eq 1 ] || usage
+[ "$#" -ge 1 ] || usage
 command -v unzip >/dev/null 2>&1 || die "unzip is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
-package="$1"
+device_serial=""
+hdc_bin="hdc"
+package="$1"; shift || true
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --device-serial) device_serial="$2"; shift 2 ;;
+        --hdc) hdc_bin="$2"; shift 2 ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
 [ -f "$package" ] || die "package does not exist: $package"
 [ -s "$package" ] || die "package is empty: $package"
 
@@ -41,6 +53,7 @@ member_count="$(printf '%s\n' "$member_list" | sed '/^$/d' | wc -l | tr -d ' ')"
 echo "[ZIP]     $member_count members"
 
 found_manifest=0
+version_list_lines=""
 for member in version_list updater_config/VERSION.mbn updater_config/updater_specified_config.xml; do
     if printf '%s\n' "$member_list" | grep -Fxq "$member"; then
         found_manifest=1
@@ -48,6 +61,9 @@ for member in version_list updater_config/VERSION.mbn updater_config/updater_spe
         if [ "$member" = "version_list" ] || [ "$member" = "updater_config/VERSION.mbn" ]; then
             printf '[VERSION] '
             unzip -p "$package_path" "$member" | tr -d '\r' | sed -n '1p'
+            if [ "$member" = "version_list" ]; then
+                version_list_lines="$(unzip -p "$package_path" "$member" | tr -d '\r' | sed '/^[[:space:]]*$/d')"
+            fi
         fi
     fi
 done
@@ -59,5 +75,21 @@ case "$(basename "$package_path")" in
         warn "Use the final top-level update.zip when available; this name can also occur in nested or intermediate artifacts."
         ;;
 esac
+
+if [ -n "${device_serial:-}" ]; then
+    command -v "$hdc_bin" >/dev/null 2>&1 || die "hdc not found: $hdc_bin"
+    device_ver="$("$hdc_bin" -t "$device_serial" shell 'param get const.product.software.version' 2>/dev/null | tr -d '\r ')"
+    [ -n "$device_ver" ] || die "could not read const.product.software.version from $device_serial"
+    echo "[DEVICE]  ${device_serial} software.version = ${device_ver}"
+    match=0
+    while IFS= read -r line; do
+        if [ -z "$line" ]; then continue; fi
+        if [ "$line" = "$device_ver" ]; then match=1; break; fi
+    done <<< "${version_list_lines}"
+    if [ "$match" -eq 0 ]; then
+        die "updater version mismatch: device software.version=${device_ver} not in package version_list. The OTA updater (updater_preprocess.cpp CheckVersion) compares const.product.software.version exactly against each version_list line. Fix by adding the product version (e.g. 1.3.0) to updater_config/VERSION.mbn, then regenerate update.zip."
+    fi
+    echo "[CHECK]   version_list matches device software.version"
+fi
 
 echo "[PASS]    Local package preflight passed"

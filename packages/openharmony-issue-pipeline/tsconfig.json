@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "declaration": true,
+    "declarationDir": "lib/types",
+    "outDir": "lib",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "paths": {
+      "@deepseek-ai/cordis": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-commands": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-commands/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-skill": ["/home/cx/.dsh/runtime/dsh-011rc2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-skill/lib/types/index.d.ts"]
+    }
+  },
+  "include": ["src"]
+}

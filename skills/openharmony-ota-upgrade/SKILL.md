@@ -20,10 +20,11 @@ description: 打包、投递、触发、监控并验证 OpenHarmony 全量或增
 1. 确认板型、包模式、源版本、目标版本、包路径与目标 serial。打包前阅读该板的 OTA 脚本与 updater XML。
 2. 完成产品构建与 bootloader 或 boot 镜像改动所需的板级打包流程。确认 updater XML 点名的每个镜像都存在且新鲜。
 3. 只制作一个包。对 A333 `a333_newpines` 流程，阅读 [references/a333-newpines.md](references/a333-newpines.md)。
-4. 触碰设备前运行本地预检脚本：
+4. 触碰设备前运行本地预检脚本（可传 `--device-serial` 做设备版本交叉校验，提前发现 `VERSION.mbn` 版本域不匹配导致的 `Version Check Fail`）：
 
    ```bash
-   "{{SKILLS_DIR}}/openharmony-ota-upgrade/scripts/ota_preflight.sh" <ota-package.zip>
+   "{{SKILLS_DIR}}/openharmony-ota-upgrade/scripts/ota_preflight.sh" <ota-package.zip> \
+     --device-serial <serial> --hdc <path-to-hdc>   # 可选：校验 version_list 与设备软件版本
    ```
 
    解决所有失败后再投递。记录打印的 SHA-256 与包大小。

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "a333-ui-landscape-control-center",
+  "boards": ["a333-2g-primary-standby"],
+  "kind": "ota-ui-landscape-control-center",
+  "description": "轮询完成后设备置横屏(orientation=2),右上角下拉打开控制中心,断言标题与亮度/WLAN 内容可见(针对 issue #4 类缺陷的固定回归)。",
+  "pass_criteria": ["控制中心标题可见", "亮度或WLAN控件可见"]
+}

@@ -51,6 +51,7 @@ python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_buil
 - 作业路径与所有参数值都通过辅助脚本编码。不要用分支或参数输入拼 shell 命令。
 - 把返回的 queue URL 视为不透明标识。Phase 2 在 phase 3 消费产物前核对分配的构建参数。
 - POST 成功只意味着「已入队」，不意味着「已构建」「已打包」「OTA 就绪」或「设备已更新」。
+- **单工作区串行**：同一 Jenkins 作业只有一个工作区/执行器，多个 MR 触发会**排队**串行构建（如 E 排在基准之后），不能并行。POST 返回 queue URL 后，用 queue 项的 `why`/blocked 状态判断是否在被别的构建阻塞；不要假设立即开始。
 
 ## 失败处理
 
