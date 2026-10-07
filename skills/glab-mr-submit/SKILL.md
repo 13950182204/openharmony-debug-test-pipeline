@@ -105,6 +105,14 @@ XTS/HATS/ACTS/DCTS/测试报告相关修复使用同样的标题语法：
 
 `<problem-name>` 由脚本从 commit 标题推导：移除所有结构化动作/芯片/XTS 字段、摘要中重复出现的开头动作词与结尾的 `问题`，再把剩余文本转成安全的分支后缀。
 
+**分支名一律英文（硬性要求，用户规定）**：源分支名只允许 `[0-9A-Za-z._/-]`，**禁止中文/非 ASCII 字符**——中文分支名不进入 CI。
+中文摘要（例如以 `...用例失败` 结尾）无法推导出英文后缀时，用 `--branch` 显式给出英文分支名，
+例如 `v1.4.x/v6.1.0.35_ActsToolChainTest_libc_test_failed`；`create_glab_mr.py` 会在推导失败或用例
+含非 ASCII 字符时直接报错，不会创建中文分支。
+若历史 MR 的源分支已是中文名，纠正方式：在**同一 commit** 上新建英文分支并推送 → 用英文分支新建 MR
+→ 关闭/删除旧 MR（删源分支会自动关闭旧 MR；若旧分支上仍有 CI 构建在跑，先等它结束再删分支，
+或用 `PUT /merge_requests/<iid>` 的 `state_event=close` 显式关闭旧 MR）→ 如需 CI，用英文分支与同一 SHA 重新触发。
+
 ## 发布 Worktree 规则
 
 从基于 `origin/v6.1.0.31_release` 的新建 worktree 提交。不要直接从长期存在的产品、modem、功能或脏集成分支提交。

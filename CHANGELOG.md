@@ -2,6 +2,78 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.0] - 2026-10-07
+
+### 新增 / 增强
+
+- **对齐 DSH `0.2.0-rc.2`**（构建与类型检查基线）
+  - `devDependencies` 的 6 个 `@deepseek-ai/dsh-*` 全部升到 `0.2.0-rc.2`；`package.json` 新增
+    `dsh.engines.dsh: ">=0.2.0-rc.2"` 与 `dsh.compatibility.dshReleases`（插件管理器的兼容性
+    门禁只认 `>=X.Y.Z[-prerelease]` 这一种写法，已按 `MINIMUM_RANGE_PATTERN` 核对）。
+  - 新增 `os: ["linux"]` 护栏：阻止本插件被误装进 Windows 桌面 profile（其 skill 全部依赖
+    WSL 工具链，装在 Windows 侧无法工作）。
+  - `src/mr-review-tool.ts`：DSH 0.2.0 起 `SubagentResult.output` 为 `readonly`，
+    `extractText` 入参由 `ContentBlock[]` 改为浅拷贝传入（同一份代码在 0.1.2-rc.1 与
+    0.2.0-rc.2 上类型检查均通过，不保留版本分支）。
+- **`dsh-tools` 链接改为跟随活动运行时**（`scripts/link-runtime-dsh-tools.mjs`）
+  - 不再拿 `devDependencies` 的版本号当期望值（升级 DSH 后会直接把 `pnpm install` 打断），
+    改为解析活动运行时：`~/.dsh/profiles/node_modules` → `~/.local/bin/dsh` wrapper 推导的
+    `~/.dsh/runtime/<id>` → `~/.dsh/runtime/*` 中最新且携带 `dsh-tools` 的一个。
+  - 声明版本与活动运行时版本**一致**才重链（保证 `TOOL_RUNTIME_SCHEDULER` Symbol 同一份实例）；
+    **不一致**时跳过重链并保持 pnpm 解析结果（避免另一世代的 `dsh-llm`/`dsh-agent` peer 类型
+    污染类型检查基线，实测会报 `[BRAND] is missing`）；解析失败降级为警告且 `exit 0`，不再阻断安装。
+- **README 补充双运行时说明**：桌面 App（`:19387`，插件页「添加插件」属于它）与 WSL 侧 dsh
+  （`:3080`，真正加载插件）的分工，以及「本插件只能装在 WSL profile」的原因与版本链接排障步骤。
+- `package.json` 的 `version` 由 `0.1.0` 校正为 `1.1.0`（`v1.0.0` tag 时漏改，与 CHANGELOG 不一致）。
+
+### 修复
+
+- **测试断言与既有实现对齐**（两处陈旧断言在 `pnpm test:python` 下失败）
+  - `openharmony-ci-orchestrator/tests/test_phase3_runner.py`：设备池已扩容（新增两台 standby），
+    原断言写死「恰好两台设备」；改为「前两台的 role/串号固定，追加设备只允许 standby」。
+  - `glab-mr-submit/tests/test_create_glab_mr.py`：分支名 ASCII 硬性规则落地后，纯中文摘要应报
+    `MrError` 而不再返回中文后缀；改为断言报错（并保留一条英文摘要的正向用例）。
+- **OTA 预检失败的两类原因纳入可重试范围**（`openharmony-ci-orchestrator/scripts/phase3_runner.py`）
+  - `claim_run` 的 `--retry-preflight` 允许原因新增：`is not online in hdc list targets`（设备换机/重新插拔后
+    串号变化）与 `source version is not allowed by package`（源版本不在包的 `version_list` 域内）。
+    两者都是**未写设备**的纯预检失败，仍受"no device write + 重试上限 5 次"约束。
+  - `references/phase3-a333.md` 新增"可升级如何判定"：包内 `version_list` 来自板级
+    `VERSION.mbn`，选 DUT 前必须核对该机版本是否在其中（实测：包为 `OpenHarmony 6.1.0.31` 域，
+    在线 DUT 为 `OpenHarmony 6.1.0.35` → 不可升级）。
+
+- **交接会话被 systemd 连带杀死**（`openharmony-ci-orchestrator`）
+  - `install_systemd_units.py` 生成的 `openharmony-ci-reconcile.service` 是 `Type=oneshot`，
+    默认 `KillMode=control-group`：单元结束时会杀掉 cgroup 内所有进程，包括编排器以
+    `start_new_session=True` 派生的交接 agent → 现象为 **agent 秒退、stdout/stderr 均 0 字节、
+    构建成功也没有下一步动作**（历史 `build_succeeded` 后无进展的第二个根因）。
+  - 单元改为 `KillMode=process`；已开机器的旧单元用 drop-in 补齐（`*.service.d/killmode.conf`）。
+  - `SKILL.md` 的 Phase 2 安全段补充该要求与自查方式。
+
+- **交接 dsh 版本/凭据 schema 不匹配导致 headless 静默退出**（环境修复，写入文档）
+  - `DSH_BIN` 原先指向旧安装 `~/.dsh/dsh-browser`（0.1.0-rc.6），其 `credentials-local` 要求
+    `.credentials.yaml` 为扁平 key→string；而该文件是当前 runtime（0.1.2-rc.1）写的
+    `version: 1` + `refs`/`records` 结构 → headless profile 加载失败、进程直接退出。
+  - 交接改为指向当前 runtime 的 dsh（`~/.dsh/runtime/dsh-012rc1/node_modules/.bin/dsh`），
+    `DSH_BIN` 同步；`~/.local/bin/dsh` 用 wrapper 转发（**软链无效**：node shim 按 `$0` 解析基底目录）。
+  - `SKILL.md` 增补版本/凭据 schema 的排查步骤。
+
+### 规则（用户规定）
+
+- **源分支名一律英文（禁止中文）** —— 中文分支名不进入 CI。
+  - `glab-mr-submit/SKILL.md`：分支格式段新增硬性要求与"历史中文分支如何纠正"的步骤
+    （同一 commit 建英文分支 → 用英文分支新建 MR → 关闭/删除旧 MR → 如需 CI 用英文分支+同 SHA 重触发；
+    旧分支上仍有构建在跑时先等它结束再删分支，或用 `state_event=close` 显式关旧 MR）。
+  - `glab-mr-submit/scripts/create_glab_mr.py`：`normalize_branch_suffix()` 改为只保留 ASCII 字符
+    （此前正则显式允许 `\u4e00-\u9fff`，会产出中文分支），并在最终分支名上增加
+    `[0-9A-Za-z._/-]+` 校验；纯中文摘要无法推导时明确报错并要求 `--branch` 显式给英文名。
+
+- **OTA 目标只取"当前在线且可升级的 DUT"** —— 不因 profile 固定串号缺席而阻塞。
+  - `openharmony-ci-orchestrator/SKILL.md` 的 Phase 3 安全段与
+    `references/phase3-a333.md`：新增目标设备选择规则（先 `hdc list targets`；优先池内在线设备，
+    primary 优于 standby；池内无在线设备时任选一台在线且通过产品身份与包预检的同型号 DUT；
+    选中的 serial 与理由写入 CI run 状态与运行日志；离线设备不等待；OTA 后在同一台设备回归）。
+    放宽的只是"选哪台"，runner 的源 SHA/产物/身份/版本校验强度不变。
+
 ## [1.0.0] - 2026-09-09
 
 首个发布版本。基于 OpenHarmony A/F/E XTS 闭环实测（报告 acts-LTS-f / 2026-09-08-17-42-39）的迭代成果。

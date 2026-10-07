@@ -76,7 +76,11 @@ def main() -> int:
     )
     reconcile = (
         "[Unit]\nDescription=OpenHarmony CI Jenkins reconciliation\n\n"
-        "[Service]\nType=oneshot\n"
+        # 交接 agent 由 reconcile 以 start_new_session 启动后即脱离本单元；
+        # Type=oneshot 默认 KillMode=control-group 会在单元结束时把该 cgroup 内
+        # 所有进程一起杀掉（agent 零输出、瞬间消失，构建成功也不会有下一步动作）。
+        # KillMode=process 只结束主进程，保留已派生的交接 agent。
+        "[Service]\nType=oneshot\nKillMode=process\n"
         f"{common}"
         f"ExecStart={command_prefix} reconcile --state-dir {unit_arg(str(state_dir))}\n"
     )

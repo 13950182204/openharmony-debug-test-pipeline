@@ -24,15 +24,13 @@ class Phase3RunnerTests(unittest.TestCase):
         self.profile = runner.read_profile("a333-2g-primary-standby")
 
     def test_a333_profile_has_fixed_primary_and_standby(self) -> None:
-        self.assertEqual(
-            [device["role"] for device in self.profile["devices"]], ["primary", "standby"]
-        )
-        self.assertEqual(
-            self.profile["devices"][0]["serial"], "ea010e325333324247102b4ed1988ce7"
-        )
-        self.assertEqual(
-            self.profile["devices"][1]["serial"], "ea010e325333324247102b4ed1a48c99"
-        )
+        # 设备池可扩容：前两台仍是 primary/standby 固定串号，追加设备只允许角色为 standby。
+        devices = self.profile["devices"]
+        self.assertGreaterEqual(len(devices), 2)
+        self.assertEqual([device["role"] for device in devices[:2]], ["primary", "standby"])
+        self.assertTrue(all(device["role"] == "standby" for device in devices[2:]))
+        self.assertEqual(devices[0]["serial"], "ea010e325333324247102b4ed1988ce7")
+        self.assertEqual(devices[1]["serial"], "ea010e325333324247102b4ed1a48c99")
 
     def test_profile_rejects_wrong_allwinner_product(self) -> None:
         state = {

@@ -39,8 +39,13 @@ class TitleTests(unittest.TestCase):
             MODULE.validate_message("[修改] 修复音频问题", "具体:\n修复测试失败。", ["test/xts/demo.cpp"])
 
     def test_branch_suffix_removes_structured_fields(self):
-        suffix = MODULE.normalize_branch_suffix("[优化] [RK3568] 优化 开机时长问题")
-        self.assertEqual("开机时长", suffix)
+        suffix = MODULE.normalize_branch_suffix("[优化] [RK3568] 优化 boot_time 问题")
+        self.assertEqual("boot_time", suffix)
+
+    def test_branch_suffix_rejects_non_ascii_subject(self):
+        # 用户规定：分支名一律英文，纯中文摘要不得自动推导后缀，必须显式 --branch。
+        with self.assertRaisesRegex(MODULE.MrError, "English branch name"):
+            MODULE.normalize_branch_suffix("[优化] [RK3568] 优化 开机时长问题")
 
 
 class LabelTests(unittest.TestCase):

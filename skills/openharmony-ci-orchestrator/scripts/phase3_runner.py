@@ -121,6 +121,7 @@ def device_snapshot(device: dict[str, Any]) -> dict[str, str]:
         "product_model": shell(serial, "param get const.product.model"),
         "software_version": shell(serial, "param get const.product.software.version"),
         "ohos_fullname": shell(serial, "param get const.ohos.fullname"),
+        "firmware_commitid": shell(serial, "param get const.product.firmware.commitid"),
         "device_tree_model": shell(serial, "cat /proc/device-tree/model"),
         "boot_completed": shell(serial, "param get bootevent.boot.completed"),
         "free_kib_line": shell(serial, "df -k /data | tail -n 1"),
@@ -204,6 +205,22 @@ def source_version_matches(
 def target_version_matches(metadata: dict[str, Any], snapshot: dict[str, str]) -> bool:
     target = normalized(metadata["target_version"])
     return target in {normalized(snapshot["software_version"]), normalized(snapshot["ohos_fullname"])}
+
+
+def target_verified_by_commitid(source_sha: str, snapshot: dict[str, str]) -> bool:
+    """OTA 结果的最硬证据：设备上跑的固件 commitid 等于本次构建的源 SHA。
+
+    包内 `[VERSION] package softVersion` 与设备的 `software_version`/`ohos_fullname` 不一定同源
+    （实测：包为 `OpenHarmony 6.1.0.32`，设备为 `OpenHarmony-6.1.0.35` / `1.3.0`），只靠版本串比对会把
+    成功的 OTA 判成失败。构建会把源 SHA 写入固件 (`const.product.firmware.commitid`)，因此优先用它判定。
+    """
+    if isinstance(source_sha, dict):
+        source_sha = source_sha.get("verified") or source_sha.get("requested") or ""
+    expected = str(source_sha or "").strip().lower()
+    actual = snapshot.get("firmware_commitid", "").strip().lower()
+    if not expected or not actual:
+        return False
+    return actual.startswith(expected[:12]) or expected.startswith(actual[:12])
 
 
 def assert_profile_matches(profile: dict[str, Any], state: dict[str, Any]) -> None:
@@ -343,6 +360,18 @@ def local_preflight(package: Path) -> str:
     return run_command([str(script), str(package)], timeout=300)
 
 
+def updater_reported_pass(evidence: str) -> bool:
+    """判断 updater 是否报告 pass。
+
+    `/data/updater/updater_result` 的真实格式是 `<包路径>|pass||install_time=141.03|`，
+    `pass` 是被竖线包围的字段而不是独立一行；只认独立行的旧正则会把**成功的 OTA 判成失败**
+    并空转到 reconnect 超时（实测两次）。
+    """
+    if re.search(r"\|pass\|", evidence, re.IGNORECASE):
+        return True
+    return bool(re.search(r"(^|\n)pass(?:\n|$)", evidence, re.IGNORECASE))
+
+
 def collect_updater_evidence(serial: str) -> str:
     return shell(
         serial,
@@ -354,7 +383,8 @@ def collect_updater_evidence(serial: str) -> str:
     )
 
 
-def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any], profile: dict[str, Any],
+                source_sha: str) -> dict[str, Any]:
     serial = device["serial"]
     attempt: dict[str, Any] = {"role": device["role"], "serial": serial, "started_at": utc_now()}
     try:
@@ -384,6 +414,7 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
         attempt["reboot_updater"] = shell(serial, "reboot updater", timeout=30, check=False)
 
         deadline = time.monotonic() + int(profile["reconnect_timeout_seconds"])
+        last_blocker = "device never reappeared in hdc list targets"
         while time.monotonic() < deadline:
             if serial in listed_targets():
                 try:
@@ -397,17 +428,31 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
                             re.IGNORECASE,
                         ):
                             raise Phase3Error("Updater rejected the OTA package after returning to normal boot")
-                        if not target_version_matches(metadata, after):
+                        # 目标判定：版本串匹配，或（更硬）设备固件 commitid 等于本次构建的源 SHA。
+                        if not (
+                            target_version_matches(metadata, after)
+                            or target_verified_by_commitid(source_sha, after)
+                        ):
+                            last_blocker = (
+                                "target version not matched: package softVersion="
+                                f"{metadata['target_version']!r}, device software_version="
+                                f"{after['software_version']!r}, ohos_fullname={after['ohos_fullname']!r}, "
+                                f"firmware_commitid={after.get('firmware_commitid', '')!r}"
+                            )
                             time.sleep(int(profile["poll_interval_seconds"]))
                             continue
-                        if not re.search(r"(^|\n)pass(?:\n|$)", evidence, re.IGNORECASE):
+                        if not updater_reported_pass(evidence):
                             raise Phase3Error("Updater result is not pass after device returned")
                         attempt.update({"status": "passed", "finished_at": utc_now(), "before": before, "after": after, "updater_evidence": evidence})
                         return attempt
-                except Phase3Error:
-                    pass
+                    last_blocker = f"device online but boot_completed={after['boot_completed']!r}"
+                except Phase3Error as error:
+                    last_blocker = str(error)
             time.sleep(int(profile["poll_interval_seconds"]))
-        raise Phase3Error(f"{device['role']} did not return to completed target boot before timeout")
+        raise Phase3Error(
+            f"{device['role']} did not return to completed target boot before timeout "
+            f"({last_blocker})"
+        )
     except (OSError, subprocess.SubprocessError, Phase3Error) as error:
         attempt.update({"status": "failed", "finished_at": utc_now(), "error": str(error)})
         if serial in listed_targets():
@@ -482,9 +527,9 @@ def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: 
         serial = device["serial"]
         snapshot = device_snapshot(device)
         evidence = collect_updater_evidence(serial)
-        passed = snapshot["boot_completed"].strip() == "true" and bool(
-            re.search(r"(^|\n)pass(?:\n|$)", evidence, re.IGNORECASE)
-        )
+        # 复用与 boot 等待相同的判定：updater_result 的 pass 是被竖线包围的字段（|pass|），
+        # 只认独立行的旧正则会把这台已成功的 OTA 判成 FAIL（实测整轮 status=fail）。
+        passed = snapshot["boot_completed"].strip() == "true" and updater_reported_pass(evidence)
         results.append({
             "id": profile_id,
             "status": "PASS" if passed else "FAIL",
@@ -501,6 +546,23 @@ def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: 
     return {"status": status, "results": results}
 
 
+def _process_alive(pid: Any) -> bool:
+    """判断 claim 时记录的进程是否还活着（用于回收被中断的 running claim）。"""
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    try:
+        os.kill(value, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -> dict[str, Any]:
     with state_lock(root):
         path = run_path(root, run_id)
@@ -509,7 +571,16 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
         if phase3.get("profile") != profile_id:
             raise Phase3Error(f"Run is not registered for phase-3 profile {profile_id!r}")
         status = phase3.get("status")
-        if status != "not_started":
+        # 被中断的 running claim（例如执行器被超时杀掉）：记录进程已不存在时允许直接回收，
+        # 否则 run 永久卡在 running，既不能重试也不会再被 reconcile 处理。
+        stale_claim = status == "running" and not _process_alive(phase3.get("pid"))
+        if stale_claim:
+            add_event(
+                state,
+                "phase3_stale_claim",
+                f"Reclaiming stale running claim (recorded pid {phase3.get('pid')!r} is gone)",
+            )
+        if status != "not_started" and not stale_claim:
             error = str(phase3.get("error", ""))
             attempts = phase3.get("attempts", [])
             attempt_errors = " ".join(
@@ -530,6 +601,15 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                     "Jenkins console has no checkout matching" in retry_reason
                     or "OTA package must expose one target softVersion" in retry_reason
                     or "device identity mismatch" in retry_reason
+                    # 目标设备不在线：profile 的设备池按"当前在线且可升级的 DUT"维护，
+                    # 换机/重新插拔后串号可能变化，属可重试的纯预检失败（未写设备）。
+                    or "is not online in hdc list targets" in retry_reason
+                    # 源版本不在包允许域内（包内 version_list 来自板级 VERSION.mbn）：
+                    # 换一台该版本域内、当前在线的 DUT 后可重试，同样未写设备。
+                    or "source version is not allowed by package" in retry_reason
+                    # 执行环境缺/半配 Jenkins 凭据（只有一个变量会被 credentials() 判为异或错误）：
+                    # 属纯环境问题且未写设备，修正 EnvironmentFile 后可重试。
+                    or "JENKINS_USER and JENKINS_API_TOKEN must be set together" in retry_reason
                 )
             ):
                 raise Phase3Error(f"Phase 3 has already been claimed with status {status!r}")
@@ -538,7 +618,7 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                 phase3.setdefault("preflight_failures", []).extend(attempts)
                 phase3["attempts"] = []
             phase3.pop("error", None)
-        phase3.update({"status": "running", "started_at": utc_now()})
+        phase3.update({"status": "running", "started_at": utc_now(), "pid": os.getpid()})
         add_event(state, "phase3_started", f"Claimed trusted profile {profile_id}")
         write_json(path, state)
         return state
@@ -673,7 +753,10 @@ def main() -> int:
         attempts = []
         successful_device = None
         for device in profile["devices"]:
-            attempt = perform_ota(device, package, metadata, profile)
+            # verify_source_sha() 返回的是证据 dict（requested/verified/package_target_version），
+            # 这里必须传真正的 SHA 字符串，否则 commitid 门禁恒不成立（实测会无限循环）。
+            attempt = perform_ota(device, package, metadata, profile,
+                                  source_sha.get("verified") or source_sha.get("requested"))
             attempts.append(attempt)
             if attempt["status"] == "passed":
                 successful_device = device

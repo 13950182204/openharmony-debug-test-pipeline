@@ -258,10 +258,16 @@ def normalize_branch_suffix(subject):
 
     text = re.sub(r"[\s/\\:：,，;；()（）\[\]{}<>《》\"'`]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
-    text = re.sub(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+", "_", text)
+    # 分支名一律英文（用户规定，中文分支名不进入 CI）：只保留 ASCII 字符，
+    # 中文/其它非 ASCII 字符一律丢弃；若丢弃后不足以构成后缀，要求显式 --branch。
+    text = re.sub(r"[^0-9A-Za-z_.\-]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
     if not text:
-        raise MrError("Cannot derive branch suffix from commit subject")
+        raise MrError(
+            "Cannot derive an English branch suffix from the commit subject "
+            "(branch names must be ASCII only); pass --branch with an explicit "
+            "English branch name"
+        )
     return text[:80]
 
 
@@ -860,6 +866,12 @@ def execute(args):
     suffix = normalize_branch_suffix(subject)
     base_branch = f"{iteration}/{base_version}_{suffix}"
     branch = args.branch or unique_branch(repo, remote, base_branch)
+    # 用户规定：源分支名一律英文（中文分支名不进入 CI）。
+    if not re.fullmatch(r"[0-9A-Za-z._/-]+", branch):
+        raise MrError(
+            f"Source branch name must be ASCII (English) only: {branch!r}; "
+            "pass --branch with an English branch name"
+        )
     project = encoded_project_path(repo, remote)
     ensure_labels_exist(repo, hostname, project, labels)
     milestone, milestone_reason = resolve_milestone(

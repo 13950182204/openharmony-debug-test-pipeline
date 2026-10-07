@@ -40,9 +40,26 @@ export function buildLoopSkill(config: Config): SkillRegistration {
 - 每阶段结束记 token 用量: python3 ${scriptPath} tokens <stage> --file ${stateFile}
 - 阶段内关键事件: python3 ${scriptPath} note <stage> '<说明>' --file ${stateFile}
 
+## 规则（硬性，优先级高于各阶段默认做法）
+
+1. **测试用例/测试包侧的问题，不得靠修改测试用例来通过，必须撰写豁免证据**。
+   - 适用判定：分诊结论为「非产品、非框架缺陷」，即失败由用例逻辑/断言强度、
+     测试夹具与资源、测试包（HAP/字节码 abc 版本/SDK 与分支工具链/签名）或测试环境
+     （设备能力、显示、权限、镜像版本不匹配）导致时，均属本规则范围。
+   - 禁止动作：修改用例源码或辅助代码、删除/放宽断言、跳过或禁用用例、
+     改测试包常量来迁就环境——这些一律不得作为「让测试变绿」的手段。
+   - 必须动作：转「豁免」路径产出豁免证据：失败 case 清单（模块#用例）、失败原因
+     （含可复核的日志/崩溃/版本证据）、申请豁免理由、证据附件路径；草稿用 skill
+     \`openharmony-waiver-draft\` 产出（缺测评编号或账号密码时按该 skill 停止并说明，
+     不得自行填写）。同时把结论写入运行日志与流水线状态（stage=waiver）。
+   - 例外：仅当用户明确要求「修改测试用例」并接受该改动为本地 XTS workaround 时，
+     才可动用例源码，且必须在运行日志里标注为 workaround 而非产品修复。
+
+2. 只有根因确实落在产品/框架/服务/驱动侧时，才进入 fix 阶段改代码，并继续走 MR/CI/OTA/回归闭环。
+
 ## 八阶段状态机
 
-阶段顺序: report → triage → fix → mr → ci → ota → regression → done
+阶段顺序: report → triage →（fix 或 waiver，按规则 1 二选一）→ mr → ci → ota → regression → done
 
 1. **report（测试报告输入）**: 确认测试报告目录 / 问题描述，必要时询问缺失信息。
    记录产物 reportDir。
@@ -50,12 +67,19 @@ export function buildLoopSkill(config: Config): SkillRegistration {
 2. **triage（测试分诊）**: 加载 skill \`openharmony-test-report-triage\`，按其流程建立失败表、
    定位测试源码、提取 hilog 证据、分类根因（产品能力/HDF 配置/框架行为/断言容差/环境/挂起/崩溃）、
    核查上游（gitcode.com/openharmony）是否已有修复，给出修复优先级建议。
-   记录产物 triageSummary（根因分类与涉及模块）。
+   分诊结论必须明确「产品侧 or 测试侧」：测试侧按规则 1 转 waiver 路径，不进入 fix。
+   记录产物 triageSummary（根因分类、涉及模块、产品侧/测试侧判定）。
 
-3. **fix（按 Karpathy 规范修复）**: 加载 skill \`karpathy-guidelines\`，遵守：
+3. **fix（按 Karpathy 规范修复，仅限产品/框架侧根因）**: 进入本阶段前先执行规则 1 的判定：
+   根因在测试用例/测试包/测试环境侧时，改走 waiver 阶段，不得修改用例源码。
+   产品/框架侧修复加载 skill \`karpathy-guidelines\`，遵守：
    思考先行（先说假设与方案再动手）、简单优先（最小代码）、外科手术式改动（只改必须改的）、
    目标驱动（每处修复都有可验证的判据）。修复后先跑最小验证（编译 / 单测 / 对应测试模块）。
    记录产物 fixSummary 与涉及文件列表。
+
+3b. **waiver（豁免材料，规则 1 的落点）**: 对判定为测试侧的问题逐项产出豁免证据
+   （失败 case 清单 + 失败原因 + 证据链 + 申请豁免理由），草稿用 skill \`openharmony-waiver-draft\`；
+   完成后记录产物 waiverRecords（记录/证据文件路径与覆盖的用例数）。
 
 4. **mr（MR 提交与六维审查）**: 加载 skill \`glab-mr-submit\`，用其
    \`create_glab_mr.py\` 生成合规标题（[动作] [芯片] [XTS] 说明）、标签与标准记录，

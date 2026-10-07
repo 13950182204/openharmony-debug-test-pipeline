@@ -64,12 +64,29 @@ python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_buil
 - Jenkins 失败、取消、参数不匹配或 agent 启动失败，都不会启动 OTA 或重试设备动作。
 - 定时器只是兜底。它不入队 Jenkins 构建，也不会在首个 agent 已记录为启动后再次启动 agent。
 - 回调 HMAC 材料与 Jenkins 凭据放在 `0600` 的 systemd 环境文件中，绝不放进运行状态 JSON 或 MR 文本。
+- **交接会话必须能在 reconcile 单元结束后存活**：`openharmony-ci-reconcile.service` 是 `Type=oneshot`，
+  systemd 默认 `KillMode=control-group` 会在单元结束时把 cgroup 内**所有**进程（含已 `start_new_session`
+  的交接 agent）一起杀掉 —— 现象是 agent 秒退且 stdout/stderr 均为 0 字节，构建成功也不会有下一步动作。
+  单元必须设 `KillMode=process`（`install_systemd_units.py` 已生成；旧装机用 drop-in 补
+  `~/.config/systemd/user/openharmony-ci-reconcile.service.d/killmode.conf`）。
+- **交接用的 dsh 必须与当前 runtime 一致**：用 `$DSH_HOME/runtime/<ver>` 下的 dsh（例如
+  `~/.dsh/runtime/dsh-012rc1/node_modules/.bin/dsh`），并让 `DSH_BIN` 指向同一个可执行文件。
+  版本不匹配时 headless profile 会在加载 credentials 插件阶段直接退出（`~/.dsh/.credentials.yaml` 的
+  schema 随版本变化：0.1.2+ 为 `version: 1` + `refs`/`records` 结构，旧 0.1.0 要求扁平 key→string），
+  且报错只在 stderr 出现、agent 日志可能为空。排查方式：用 service 的环境手工跑一次
+  `dsh --profile headless "Reply with exactly: HEADLESS_OK"`，确认返回 `HEADLESS_OK` 再触发交接。
 
 ## Phase 3 安全
 
 - profile 是 `profiles/` 下的受信任 JSON 文件；分支名、Jenkins 参数与 MR 文本永远不会提供可执行的设备命令。
 - 已安装的 `a333-2g-primary-standby` profile 只接受 `OpenHarmony-V6.1-AllWinner`、`a333_medical_dsi_800x1280` 及预期的 DHong/76A/DNAKE 产品参数。它只下载归档的 `openharmony_V6.1/out/ota/update.zip`。
 - 其主设备 serial 是 `ea010e325333324247102b4ed1988ce7`；备机 serial 是 `ea010e325333324247102b4ed1a48c99`。仅当主设备升级失败或未能恢复正常 HDC 启动后，才动备机。
+- **OTA 目标选择（用户规定，2026-09-10 起执行）**：OTA 只需选择**当前在线且可升级的 DUT**，不要因为固定串号缺席而卡住——
+  先 `hdc list targets` 枚举在线设备；优先 profile 池内在线设备（primary 优先，其次 standby）；
+  池内无在线设备时，任选一台在线且通过产品身份校验（`const.product.name/model/brand/manufacturer`）
+  与包预检（源版本兼容、`/data` 容量、`write_updater` 可用）的同型号 DUT；
+  把最终选中的 serial 与选择理由写入 CI run 状态（`ci_orchestrator.py note`）与运行日志；
+  离线设备不等待、不反复探测，OTA 完成后在同一台设备上做回归。
 - 每次 OTA 都需要包 ZIP/版本预检、源版本兼容、`/data` 容量、重连后的设备身份、`updater_result=pass` 与 `bootevent.boot.completed=true`。
 - Phase 3 要求已注册的源 SHA，并在下载产物前扫描 Jenkins `consoleText` 中实际的 `HEAD is now at` 检出记录。仅分支的构建证据不足，会被拦截。
 - 内置 OTA 冒烟检查始终运行。没有显式功能回归 profile 的运行报告 `INCONCLUSIVE`，绝不报告功能回归通过。

@@ -344,11 +344,13 @@ def create_adopted_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     }
     add_event(state, "adopted", f"Adopted verified Jenkins build {args.job} #{args.build_number}")
     write_json(path, state)
+    # 与 reconcile 的 SUCCESS 分支一致：交给 systemd 单元执行（不再经 LLM 会话）。
+    state.setdefault("phase3", {})["unit_restarts"] = int(state.get("phase3", {}).get("unit_restarts", 0)) + 1
     try:
-        launch_agent(root, state)
+        start_phase3_unit(root, state)
     except (OSError, OrchestratorError) as error:
-        state["agent"].update({"status": "launch_failed", "error": str(error)})
-        add_event(state, "agent_launch_failed", str(error))
+        state.setdefault("agent", {}).update({"status": "launch_failed", "error": str(error)})
+        add_event(state, "phase3_unit_start_failed", str(error))
     write_json(path, state)
     return state
 
@@ -430,6 +432,52 @@ def agent_prompt(state_path: Path, state: dict[str, Any]) -> str:
     )
 
 
+PHASE3_UNIT_TEMPLATE = "openharmony-ci-phase3@{}"
+PHASE3_UNIT_MAX_RESTARTS = 3
+
+
+def phase3_unit_state(run_id: str) -> str:
+    """查询 phase-3 systemd 单元的当前状态；查不到即视为 inactive。"""
+    unit = PHASE3_UNIT_TEMPLATE.format(run_id) + ".service"
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            text=True, capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return (result.stdout or "").strip() or "inactive"
+
+
+def start_phase3_unit(root: Path, state: dict[str, Any]) -> None:
+    """用 systemd oneshot 模板单元执行 phase 3（确定性执行、无 LLM、无 shell 60s 超时）。
+
+    历史实现用 `dsh --profile headless` 起一个 LLM 会话去跑一条本来确定的命令，实测有三类硬缺陷：
+    会话 shell 不继承自定义环境变量且会过滤密钥（导致 JENKINS_USER/TOKEN 半配 -> 异或报错）、
+    会话对长命令约 60s 超时会拦腰杀掉分钟级 OTA（run 卡在 running 且设备留下半截包）、
+    以及依赖 PATH 里的 glab 等外部命令。改为单元后：环境由 EnvironmentFile 显式提供、
+    无命令超时限制、独立于 reconcile 进程（不被 cgroup 连带杀）、可用 systemctl 观察与重试。
+    """
+    run_id = state["run_id"]
+    unit = PHASE3_UNIT_TEMPLATE.format(run_id) + ".service"
+    result = subprocess.run(
+        ["systemctl", "--user", "start", "--no-block", unit],
+        text=True, capture_output=True, timeout=60,
+    )
+    detail = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode != 0:
+        state.setdefault("phase3", {})["unit"] = {
+            "name": unit, "state": "start_failed", "detail": detail[:500],
+        }
+        raise OrchestratorError(f"Failed to start {unit}: {detail[:300]}")
+    phase3 = state.setdefault("phase3", {})
+    phase3["unit"] = {"name": unit, "state": "started"}
+    state.setdefault("agent", {}).update({
+        "status": "launched", "mode": "systemd-unit", "unit": unit, "launched_at": utc_now(),
+    })
+    add_event(state, "phase3_unit_started", f"Started {unit}")
+
+
 def launch_agent(root: Path, state: dict[str, Any]) -> None:
     agent = state["agent"]
     if agent.get("status") != "not_started":
@@ -493,11 +541,27 @@ def reconcile_one(
     if status in TERMINAL_BUILD_STATUSES:
         return {"run_id": state["run_id"], "status": status, "action": "terminal"}
     if status == "build_succeeded":
-        agent_status = state.get("agent", {}).get("status")
-        if agent_status == "launched":
-            return {"run_id": state["run_id"], "status": status, "action": "agent_already_launched"}
-        if agent_status == "launch_failed":
-            return {"run_id": state["run_id"], "status": status, "action": "agent_launch_failed"}
+        phase3_status = state.get("phase3", {}).get("status")
+        unit_state = phase3_unit_state(state["run_id"])
+        if unit_state in ("active", "activating", "reloading"):
+            return {"run_id": state["run_id"], "status": status, "action": "phase3_running"}
+        if unit_state == "unknown":
+            # 无法查询 systemd（例如非 systemd 环境）：保持旧行为，避免重复触发。
+            return {"run_id": state["run_id"], "status": status, "action": "phase3_unit_unknown"}
+        if phase3_status not in (None, "", "not_started", "running"):
+            # 单元已结束且 run 状态已收敛（runner 的终态是 passed / fail / inconclusive / dry_run /
+            # failed），交给 phase-3 自身的 claim/重试策略处理，不再自动重启。
+            return {"run_id": state["run_id"], "status": status, "action": f"phase3_{phase3_status}"}
+        restarts = int(state.get("phase3", {}).get("unit_restarts", 0))
+        if restarts >= PHASE3_UNIT_MAX_RESTARTS:
+            add_event(state, "phase3_restart_exhausted",
+                      f"phase-3 unit ended {restarts} times without converging; manual action required")
+            return {"run_id": state["run_id"], "status": status, "action": "phase3_restart_exhausted"}
+        # 计数必须落盘，否则上限永远触发不了（实测会每分钟无限重启）。
+        state.setdefault("phase3", {})["unit_restarts"] = restarts + 1
+        write_json(run_path(root, state["run_id"]), state)
+        add_event(state, "phase3_unit_restart",
+                  f"phase-3 unit is {unit_state} and run state is {phase3_status!r}; restarting (attempt {restarts + 1})")
     origin = origin_of(trigger["job_url"])
     build_url = trigger.get("build_url")
     build_number = trigger.get("build_number")
@@ -596,17 +660,16 @@ def reconcile_one(
 
     state["status"] = "build_succeeded"
     add_event(state, "build_succeeded", f"Jenkins build {trigger['build_number']} finished successfully")
+    if state.get("agent", {}).get("status") == "launched":
+        return {"run_id": state["run_id"], "status": state["status"], "action": "phase3_already_started"}
+    state.setdefault("phase3", {})["unit_restarts"] = int(state.get("phase3", {}).get("unit_restarts", 0)) + 1
     try:
-        launch_agent(root, state)
+        start_phase3_unit(root, state)
     except (OSError, OrchestratorError) as error:
-        state["agent"].update({"status": "launch_failed", "error": str(error)})
-        add_event(state, "agent_launch_failed", str(error))
-        return {"run_id": state["run_id"], "status": state["status"], "action": "agent_launch_failed"}
-    return {
-        "run_id": state["run_id"],
-        "status": state["status"],
-        "action": "agent_launched" if state["agent"]["status"] == "launched" else "agent_already_launched",
-    }
+        state.setdefault("agent", {}).update({"status": "launch_failed", "error": str(error)})
+        add_event(state, "phase3_unit_start_failed", str(error))
+        return {"run_id": state["run_id"], "status": state["status"], "action": "phase3_unit_start_failed"}
+    return {"run_id": state["run_id"], "status": state["status"], "action": "phase3_unit_started"}
 
 
 def selected_paths(root: Path, run_id: str | None) -> list[Path]:
