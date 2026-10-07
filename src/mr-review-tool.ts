@@ -118,7 +118,8 @@ async function runReviewer(
     agentOptions: agentOptionsForTier(tier),
   })
   const result = await run.result
-  const text = extractText(result.output)
+  // DSH 0.2.0 起 `SubagentResult.output` 为 readonly，浅拷贝一份再交给 extractText。
+  const text = extractText([...result.output])
   if (result.stopReason !== 'completed') {
     return { ok: false, text: `子代理未正常完成（stopReason=${result.stopReason}）`, tierName: tier?.name ?? '继承' }
   }

@@ -26,6 +26,19 @@ report → triage → fix → mr → ci → ota → regression → done
 
 ## 安装
 
+> **只能装在 WSL 侧的 dsh profile。** 本机有两套运行时，别装错：
+>
+> | | Windows 桌面 App | WSL 侧 dsh |
+> |---|---|---|
+> | 监听 | `127.0.0.1:19387`（Web GUI 外壳） | `127.0.0.1:3080`（`deepseek-dsh-web.service`） |
+> | profile | `C:\Users\<user>\.dsh\profiles\desktop` | `~/.dsh/profiles/web` |
+> | 角色 | 壳 + WSL 工作区桥接（`dsh-wsl-workspace`） | **真正执行 agent、加载本插件** |
+>
+> GUI 插件页（「添加插件」）属于桌面 App，安装目标是 **Windows 的 desktop profile**。
+> 本插件的 skill 全部依赖 WSL 工具链（`python3`、`~/.dsh/pipeline-*.json`、`hdc`/`glab`/`ssh`、
+> systemd 单元），装到 Windows profile 后在 Windows 会话里跑不通，因此**不要**用那个弹窗装本插件。
+> WSL 侧也不需要弹窗：用下面的 `link:` 命令即可（这也是当前在用的形态）。
+
 ```bash
 # 在本仓库目录构建后，用 link: 装进 web profile
 pnpm build
@@ -42,22 +55,43 @@ dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
 > 注意：若 profile 的 `cordis.patch.yml` 里已手工 mount 过同名行，先移除，
 > 避免插件双实例。
 
-### DSH 运行时依赖
+### DSH 版本兼容
 
-`@deepseek-ai/dsh-tools` 导出的调度器使用进程内 `Symbol` 标识；插件必须与
-正在运行的 DSH 使用同一份模块实例，不能只满足“版本号相同”。本仓库的
-`postinstall`/`link-runtime-deps` 会把插件内的 `dsh-tools` 链到当前
-`~/.dsh/profiles/node_modules` 共享运行时。升级 DSH 后重新构建插件并执行：
+- **构建与类型检查基线：`0.2.0-rc.2`**（`devDependencies` 的 `@deepseek-ai/dsh-*`），
+  `package.json` 声明 `dsh.engines.dsh: ">=0.2.0-rc.2"`，并带
+  `dsh.compatibility.dshReleases` 兼容矩阵。
+- 插件不保留旧版本分支：0.1.2-rc.1 与 0.2.0-rc.2 的接触面（`defineTool`、`ctx.skills`、
+  `ctx.commands`、`ctx.subagents`、`Agent`/`AgentOptions`）除 `SubagentResult.output` 由
+  “可变”变为 `readonly` 外没有破坏性变更，因此**同一份代码在两个版本上都能加载**，
+  只是不再为旧版本做额外适配。
+- `package.json` 的 `os: ["linux"]` 是护栏：阻止误装到 Windows profile。
+
+### 运行时依赖链接（`dsh-tools` 的 Symbol 一致性）
+
+`@deepseek-ai/dsh-tools` 导出的调度器使用进程内 `Symbol` 标识；插件必须与**正在运行的
+DSH** 使用同一份模块实例，不能只满足“版本号相同”。`postinstall` / `link-runtime-deps`
+会解析活动运行时（`~/.dsh/profiles/node_modules` → `~/.local/bin/dsh` wrapper 推导的
+`~/.dsh/runtime/<id>` → `~/.dsh/runtime/*` 里最新的一个）并链接 `dsh-tools`：
+
+- **声明版本 == 活动运行时版本** → 链接到活动运行时的 `dsh-tools`（Symbol 一致）；
+- **两者不同** → 跳过重链，保持 pnpm 解析结果（保证类型检查基线不被另一世代的
+  peer 类型污染），并打印提示；
+- **解析不到活动运行时** → 打印警告并 `exit 0`，**不打断 `pnpm install`**。
+
+升级 DSH 后的推荐顺序：
 
 ```bash
-pnpm install
-pnpm run link-runtime-deps
+dsh --profile web --dump-config     # 让共享运行时树先按新 runtime 生成
+pnpm install                        # 版本对齐后 postinstall 自动重链
+pnpm run link-runtime-deps          # 需要时手动补
+pnpm build
 systemctl --user restart deepseek-dsh-web.service
 ```
 
-若共享运行时尚未生成，先用目标 DSH 运行一次 `dsh --profile web --dump-config`。
-不要在 `/pipeline` 后面放自然语言；该命令只接受 `status` 或 `reset`，实际闭环
-任务请直接作为普通对话发送。
+排障：若插件启动报 `MODULE_NOT_FOUND`，先看 `readlink -f node_modules/@deepseek-ai/dsh-tools`
+是否指向活动运行时的同一份文件；再确认 profile 的 `dsh.profile.bundles` 里有
+`openharmony-debug-test-pipeline`。不要在 `/pipeline` 后面放自然语言；该命令只接受
+`status` 或 `reset`，实际闭环任务请直接作为普通对话发送。
 
 ## 配置
 

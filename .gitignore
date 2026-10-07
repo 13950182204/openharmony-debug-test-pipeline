@@ -7,6 +7,9 @@ dist/
 *.log
 pipeline-state.json
 
+# 本地备份（状态文件/profile 的 .bak-<时间戳>，不入库）
+*.bak-*
+
 # 编辑器与系统文件
 .DS_Store
 *.swp
