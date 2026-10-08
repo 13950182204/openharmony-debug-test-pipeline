@@ -2,6 +2,27 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.7] - 2026-10-08
+
+发布前敏感数据复查发现：**本机备份文件被打进了发布产物**。
+
+### 修复
+
+- `files` 白名单补否定模式 `!**/*.bak-*` 与 `!**/*.log`。
+  `skills/openharmony-ci-orchestrator/profiles/a333-2g-primary-standby.json.bak-20260912-172525`
+  虽已被 `.gitignore` 忽略（`git check-ignore` 命中），但 `files` 以 `skills` 整目录放行，
+  而否定模式此前只覆盖了 `__pycache__/*.pyc`——于是该备份被包含进 1.1.4 与 1.1.6 的 tarball
+  （实测 `tar tzf` 可见）。内容为**过期设备池配置（4 台 DUT 串号）**，无 token/密钥。
+  修复后打包项 58 → 57，`tar tzf` 不再出现 `.bak-*`。
+- 未排除 `skills/glab-mr-submit/assets/defaults.env`：它是**刻意入库的配置模板**
+  （`create_glab_mr.py:16` 读取、`SKILL.md:84` 文档化），排除会让 skill 开箱即坏；
+  其中仅内网地址与用户名，无凭据。
+
+### 复查结论（当前 1.1.7 基线）
+
+- 工作树、全 git 历史、发布产物三处均**无** GitLab token（`glpat-*`/`v_*`）、私钥块、
+  `_authToken`、密码字面量。凭据一律由环境变量注入（CI 单元文件用 `# GITLAB_HOST=` 注释模板）。
+
 ## [1.1.6] - 2026-10-08
 
 `mr_review_six` 在真实环境完全不可用（本次 MR 实测发现）。
