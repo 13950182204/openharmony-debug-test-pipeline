@@ -1,8 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.ts'
+import { resolveModelPaths } from './wsl-paths.ts'
 
 /**
  * 闭环编排 skill：把五个模块 skill 串成「修改-调试-测试」八阶段状态机。
@@ -14,10 +15,12 @@ function packageRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..')
 }
 
-export function buildLoopSkill(config: Config): SkillRegistration {
-  const root = packageRoot()
-  const stateFile = config.stateFile
-  const scriptPath = join(root, 'scripts', 'pipeline_state.py')
+export function buildLoopSkill(config: Config, root: string = packageRoot()): SkillRegistration {
+  // 正文里的脚本/状态路径由模型在会话 bash（宿主为 Windows 时即 WSL）里执行，
+  // 因此按「模型口径」解析，而不是直接用宿主路径。见 wsl-paths.ts。
+  const modelPaths = resolveModelPaths(root, config)
+  const stateFile = modelPaths.stateFile
+  const scriptPath = modelPaths.pipelineScript
 
   const content = `# OpenHarmony 调测闭环流水线
 

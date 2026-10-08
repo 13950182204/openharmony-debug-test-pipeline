@@ -10,6 +10,11 @@ export interface Config {
   /** 流水线状态文件路径（跨会话持久化闭环进度） */
   stateFile?: string
   /**
+   * 「宿主 Windows、执行 WSL」时的插件包 WSL 路径（DSH Desktop 直驱 agent loop 的场景）。
+   * 不配置则按插件包在宿主上的真实路径渲染 skill 正文——即 Linux/WSL 原生安装下的正确行为。
+   */
+  wslPackageRoot?: string
+  /**
    * 六维审查子代理模型档位表（可选）。索引 0 为最强档，末档为下限。
    * 缺省两档：high=deepseek-v4-pro、low=deepseek-v4-flash。
    * 注意：reasoningEffort 是 provider 全局配置，无法按子代理区分。
@@ -26,5 +31,6 @@ const ladderTierSchema = z.object({
 
 export const Config: z<Config> = z.object({
   stateFile: z.string().default('~/.dsh/pipeline-state.json'),
+  wslPackageRoot: z.string(),
   reviewLadder: z.array(ladderTierSchema),
 })

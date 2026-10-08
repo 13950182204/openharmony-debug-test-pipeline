@@ -8,6 +8,9 @@
  * 后把 `pnpm install` 直接打断），而是去解析**活动运行时**实际携带的
  * dsh-tools：版本一致就沿用，不一致就自动重链；解析不到时降级为警告，
  * 不阻断安装（真正的加载失败仍会在插件启动时暴露）。
+ *
+ * Windows 宿主（DSH Desktop 在 Windows 侧加载插件、会话命令转发进 WSL）
+ * 不需要这层链接，见下方 `process.platform === 'win32'` 分支。
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs'
@@ -19,6 +22,17 @@ const NAME = '[openharmony-debug-test-pipeline]'
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)))
 const target = join(packageDir, 'node_modules', '@deepseek-ai', 'dsh-tools')
 const dshHome = join(homedir(), '.dsh')
+
+/**
+ * Windows 宿主（DSH Desktop 在 Windows 侧加载插件、会话命令转发进 WSL）上**不做**链接：
+ * `~/.dsh/runtime` 那套只在 Linux/WSL 侧存在；而链接的目的——与活动运行时共用
+ * `dsh-tools`（`TOOL_RUNTIME_SCHEDULER` 的进程内 Symbol 同一性）——对 Windows 宿主
+ * 不适用，因为命令执行不经过这里的 Node。Windows 侧直接用 pnpm 解析的依赖即可。
+ */
+if (process.platform === 'win32') {
+  console.log(`${NAME} Windows 宿主：跳过 dsh-tools 运行时链接（该 Symbol 一致性要求只对 Linux/WSL 侧运行时成立）。`)
+  process.exit(0)
+}
 
 /**
  * 读取 `<dir>/@deepseek-ai/dsh-tools` 的清单；目录或 package.json 不存在返回 undefined。

@@ -2,6 +2,45 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.1] - 2026-10-08
+
+支持「插件在 Windows 侧加载、命令在 WSL 侧执行」的 DSH Desktop 形态（与 `dsh-wsl-workspace`
+同一模型），并修正一处会挡住该形态的护栏与一处打包缺陷。
+
+### 新增 / 增强
+
+- **新增 `src/wsl-paths.ts`：模型可见路径与宿主路径分离解析**
+  - 背景：DSH Desktop 直驱 agent loop 时插件在 **Windows 侧 Node** 加载，而会话 `bash` 把命令
+    转发进 **WSL**。插件用 `import.meta.url`/`homedir()` 推导出的宿主路径（`\\wsl.localhost\...`、
+    `C:\Users\...`）模型跑不动。
+  - 新增配置 `wslPackageRoot`（把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 路径）与 `stateFile`
+    的 UNC 用法（Windows Node 读、WSL `python3` 写指向同一文件，实测 `stat`/`sha256` 一致）。
+  - `joinModelPath` 统一输出正斜杠：Windows 侧 `node:path.join` 会产出 `/home/cx/os\skills`
+    这种混合路径，正是要避免的。
+  - Windows 宿主且未配置 `wslPackageRoot` 时打 warn 提示，不静默降级。
+- **`scripts/link-runtime-dsh-tools.mjs` 在 Windows 宿主直接跳过**：`~/.dsh/runtime` 那套只在
+  Linux/WSL 侧存在，而链接的目的（与活动运行时的 `TOOL_RUNTIME_SCHEDULER` 共用同一 Symbol）
+  对 Windows 宿主不适用——命令执行不经过这里的 Node。
+- 移除 `package.json` 的 `os: ["linux"]`：该护栏会阻止装进 desktop profile，与本版本支持的
+  形态冲突。
+- README 重写「安装」段：给出 A（WSL 原生）/B（Desktop）两种形态的对照与配置样板，并记录
+  实测结论——`link:`/`file:` 指向 WSL 路径会被 pnpm 改写成不存在的 `/wsl.localhost/...`，
+  junction/symlink 指向 `\\wsl.localhost\...` 也**不可穿越**（`Test-Path` 真、Node `existsSync` 假），
+  因此 Desktop 侧必须用 tarball 或 Windows 侧目录安装。
+
+### 修复
+
+- `files` 白名单改用否定模式排除 `__pycache__/*.pyc`：`skills/` 整目录被列入白名单时会把
+  Python 运行期产物一起打进 tarball（实测 8 个 `.pyc`），而 `.npmignore` 在此不生效
+  （pnpm 以 `files` 为准）。
+
+### 验证
+
+- `tsc --noEmit`（0.2.0-rc.2 基线）0 错误；vitest 29 通过（新增 9 个路径口径用例）；
+  skill 自带 python 套件 15+14 通过。
+- Windows 侧实测：以 stub ctx 调用插件 `apply`，6 个 skill + `/pipeline` + `mr_review_six`
+  全部注册，`宿主=win32`，正文为 WSL 路径；与 WSL 侧共用同一 `pipeline-state.json`。
+
 ## [1.1.0] - 2026-10-07
 
 ### 新增 / 增强

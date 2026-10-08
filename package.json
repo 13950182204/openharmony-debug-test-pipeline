@@ -1,10 +1,7 @@
 {
   "name": "openharmony-debug-test-pipeline",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "OpenHarmony 修改-调试-测试闭环 DSH 插件：聚合分诊/修复/MR/CI/OTA/回归六个 skill 模块与八阶段编排，各模块可独立调用",
-  "os": [
-    "linux"
-  ],
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -20,7 +17,10 @@
     "skills",
     "scripts",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "!**/__pycache__",
+    "!**/*.pyc",
+    "!**/*.pyo"
   ],
   "dsh": {
     "bundle": {

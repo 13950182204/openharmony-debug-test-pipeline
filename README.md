@@ -26,26 +26,28 @@ report → triage → fix → mr → ci → ota → regression → done
 
 ## 安装
 
-> **只能装在 WSL 侧的 dsh profile。** 本机有两套运行时，别装错：
->
-> | | Windows 桌面 App | WSL 侧 dsh |
-> |---|---|---|
-> | 监听 | `127.0.0.1:19387`（Web GUI 外壳） | `127.0.0.1:3080`（`deepseek-dsh-web.service`） |
-> | profile | `C:\Users\<user>\.dsh\profiles\desktop` | `~/.dsh/profiles/web` |
-> | 角色 | 壳 + WSL 工作区桥接（`dsh-wsl-workspace`） | **真正执行 agent、加载本插件** |
->
-> GUI 插件页（「添加插件」）属于桌面 App，安装目标是 **Windows 的 desktop profile**。
-> 本插件的 skill 全部依赖 WSL 工具链（`python3`、`~/.dsh/pipeline-*.json`、`hdc`/`glab`/`ssh`、
-> systemd 单元），装到 Windows profile 后在 Windows 会话里跑不通，因此**不要**用那个弹窗装本插件。
-> WSL 侧也不需要弹窗：用下面的 `link:` 命令即可（这也是当前在用的形态）。
+本插件支持**两种部署形态**，同一份源码：
+
+| | A. WSL 侧 dsh（原生） | B. DSH Desktop（宿主 Windows、执行 WSL） |
+|---|---|---|
+| 插件加载 | WSL 侧 Node | **Windows 侧 Node**（desktop profile） |
+| 命令执行 | WSL（`bash` 就是 WSL） | WSL（`bash` 工具转发进发行版） |
+| 适用 | `dsh web`（`:3080`）、headless、交接会话 | 桌面 App 的 GUI 会话（`:19387`） |
+| 路径口径 | 宿主路径即模型路径，**无需配置** | 需 `wslPackageRoot` + `stateFile`（见下） |
+
+> 两个运行时容易混淆，先认清分工：
+> **桌面 App 能跑 agent loop**（系统提示、skill 目录、工具注册都在 Windows Node 里），
+> 而 `bash`/`read`/`write` 由 `dsh-wsl-workspace` 转发进 WSL 执行。所以「脚本必须跑在 WSL」
+> 与「插件在 Windows 侧加载」并不冲突——**Linux 工具链不构成移植障碍**，因为脚本从来不经过
+> 这里的 Node，而是由模型在会话 bash 里调用。
+
+### A. 装到 WSL 侧（原生，最简单）
 
 ```bash
-# 在本仓库目录构建后，用 link: 装进 web profile
 pnpm build
 dsh plugin --profile web add link:/home/cx/os/openharmony-debug-test-pipeline
 ```
 
-安装命令会自动把本包追加进 profile 的 `dsh.profile.bundles` 层栈。
 **重启 dsh web 后生效**。验证：
 
 ```bash
@@ -54,6 +56,34 @@ dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
 
 > 注意：若 profile 的 `cordis.patch.yml` 里已手工 mount 过同名行，先移除，
 > 避免插件双实例。
+
+### B. 装到 DSH Desktop（GUI 会话里可用）
+
+GUI 的插件页查的是 **npm registry**，本包未发布，所以按包名搜不到（会提示「未找到相关插件」）。
+用**本地路径**安装：先 `pnpm pack` 出 tarball，再在弹窗里填 tarball 的 Windows 路径。
+
+必须用 tarball / Windows 侧目录，**不能用 `link:` 或 `file:` 指向 WSL 内的仓库**：
+
+- pnpm 会把 UNC 规格改写成 `/wsl.localhost/...`（不存在的路径）；
+- 用 Windows 符号链接/junction 指到 `\\wsl.localhost\...` 也**不可行**——`Test-Path` 为真，
+  但 Windows Node 无法穿越（`existsSync` 为假），插件会加载失败。
+
+装完后在 desktop profile 的 `cordis.patch.yml` 加一行 config（**否则 skill 正文里的路径是
+Windows 路径、模型在 WSL 里跑不动**）：
+
+```yaml
+- id: oh-debug-pipeline
+  name: "openharmony-debug-test-pipeline"
+  config:
+    wslPackageRoot: /home/cx/os/openharmony-debug-test-pipeline
+    stateFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json
+```
+
+- `wslPackageRoot`：把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 可用路径；
+- `stateFile`：写成 `//wsl.localhost/...` 形态，Windows Node 读、WSL `python3` 写**指向同一个文件**
+  （实测两侧 `stat` 与 `sha256` 一致）。
+
+未配置 `wslPackageRoot` 时插件会在 Windows 宿主上打一条 warn 提示。
 
 ### DSH 版本兼容
 
@@ -64,7 +94,7 @@ dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
   `ctx.commands`、`ctx.subagents`、`Agent`/`AgentOptions`）除 `SubagentResult.output` 由
   “可变”变为 `readonly` 外没有破坏性变更，因此**同一份代码在两个版本上都能加载**，
   只是不再为旧版本做额外适配。
-- `package.json` 的 `os: ["linux"]` 是护栏：阻止误装到 Windows profile。
+
 
 ### 运行时依赖链接（`dsh-tools` 的 Symbol 一致性）
 

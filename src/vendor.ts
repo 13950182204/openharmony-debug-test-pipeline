@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
+import type { Config } from './config.ts'
+import { resolveModelPaths } from './wsl-paths.ts'
 
 /**
  * vendored skill 注册器：把插件包内 skills/ 目录下的五个 OpenHarmony
@@ -90,11 +92,14 @@ export function packageRoot(): string {
  */
 export function registerVendoredSkills(
   ctx: Context,
-  config: { stateFile: string },
+  config: Pick<Config, 'stateFile' | 'wslPackageRoot'>,
   root: string = packageRoot(),
 ): void {
   const skillsDir = join(root, 'skills')
   const scriptPath = join(root, 'scripts', 'pipeline_state.py')
+  // 正文里的路径由模型在会话 bash（宿主为 Windows 时即 WSL）里执行：Windows 侧推导出的
+  // 宿主路径模型跑不动，因此单独按「模型口径」渲染，见 wsl-paths.ts。
+  const modelPaths = resolveModelPaths(root, config)
   for (const name of VENDORED_SKILLS) {
     const skillDir = join(skillsDir, name)
     const skillFile = join(skillDir, 'SKILL.md')
@@ -111,7 +116,7 @@ export function registerVendoredSkills(
       name: parsed.name,
       description: parsed.description,
       whenToUse: parsed.whenToUse,
-      content: buildSkillContent(parsed.content, skillsDir, scriptPath),
+      content: buildSkillContent(parsed.content, modelPaths.skillsDir, modelPaths.pipelineScript),
       path: skillFile,
       source: 'bundled',
       resourceBase: { kind: 'directory', path: skillDir },
