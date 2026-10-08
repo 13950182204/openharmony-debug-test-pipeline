@@ -863,9 +863,15 @@ def execute(args):
     if iteration == "auto":
         iteration = infer_iteration(repo, remote, base_version, fallback)
 
-    suffix = normalize_branch_suffix(subject)
-    base_branch = f"{iteration}/{base_version}_{suffix}"
-    branch = args.branch or unique_branch(repo, remote, base_branch)
+    # 显式 --branch 时不得再去推导后缀：中文摘要推导必然失败（分支名一律英文的硬性规则），
+    # 若先调用 normalize_branch_suffix() 就会在读到 --branch 之前抛错，使文档承诺的
+    # 「无法推导时用 --branch 显式给出英文分支名」这条逃生口不可达。推导结果只在未显式
+    # 指定分支时才需要。
+    if args.branch:
+        branch = args.branch
+    else:
+        suffix = normalize_branch_suffix(subject)
+        branch = unique_branch(repo, remote, f"{iteration}/{base_version}_{suffix}")
     # 用户规定：源分支名一律英文（中文分支名不进入 CI）。
     if not re.fullmatch(r"[0-9A-Za-z._/-]+", branch):
         raise MrError(

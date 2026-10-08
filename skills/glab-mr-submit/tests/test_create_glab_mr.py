@@ -42,6 +42,15 @@ class TitleTests(unittest.TestCase):
         suffix = MODULE.normalize_branch_suffix("[优化] [RK3568] 优化 boot_time 问题")
         self.assertEqual("boot_time", suffix)
 
+    def test_explicit_branch_skips_suffix_derivation(self):
+        # --branch 是「推不出英文后缀」时的逃生口，必须与后缀推导解耦：
+        # 推导函数会对非 ASCII 抛错，但显式分支名不该经过它。
+        import inspect
+        src = inspect.getsource(MODULE.execute)
+        self.assertIn('if args.branch:', src)
+        self.assertLess(src.index('if args.branch:'), src.index('normalize_branch_suffix(subject)'),
+                        '显式 --branch 必须在调用 normalize_branch_suffix() 之前短路')
+
     def test_branch_suffix_rejects_non_ascii_subject(self):
         # 用户规定：分支名一律英文，纯中文摘要不得自动推导后缀，必须显式 --branch。
         with self.assertRaisesRegex(MODULE.MrError, "English branch name"):
