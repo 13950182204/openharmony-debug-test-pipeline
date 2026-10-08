@@ -36,11 +36,21 @@ export interface Config {
   announceToAgent?: boolean
   /** Master switch for the plugin (routes, tools, prompt section). */
   enabled?: boolean
+  /**
+   * 凭据文件路径；缺省 `~/.dsh/gitlab-credentials.json`。
+   *
+   * 「宿主 Windows、执行 WSL」（DSH Desktop）形态下必须显式给成 WSL 视角路径的
+   * Windows 可写形态（`//wsl.localhost/<发行版>/home/<用户>/.dsh/gitlab-credentials.json`），
+   * 否则桌面侧会写 `C:\Users\...\.dsh\...`，与 WSL 侧的 `glab` / MR 流程读的那份**分叉**。
+   * 该值在插件启动时读取一次，改动后需重启宿主。
+   */
+  storeFile?: string
 }
 
 export const Config: z<Config> = z.object({
   announceToAgent: z.boolean().default(true),
   enabled: z.boolean().default(true),
+  storeFile: z.string(),
 })
 
 const DEFAULT_ANNOUNCE = true
@@ -61,7 +71,12 @@ function applyImpl(ctx: Context, config?: Config): void {
     enabled: current().enabled ?? true,
   })
 
-  const store = new CredentialStore()
+  // 启动时读取一次（与其它 bundle 配置一致，改动后需重启宿主）：
+  // 桌面形态下由 config.storeFile 指到 WSL 那份文件，避免两份凭据分叉。
+  const storeFile = config?.storeFile
+  const store = new CredentialStore(
+    storeFile !== undefined && storeFile !== '' ? { filePath: storeFile } : {},
+  )
 
   const { routes } = makeRoutes({ store })
   let disposeRoutes: (() => void) | undefined

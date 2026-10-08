@@ -15,6 +15,7 @@ GitLab 凭据管理插件（dsh web GUI）：按主机保存访问令牌（0600 
 ## 数据
 
 - 凭据与偏好：`~/.dsh/gitlab-credentials.json`（0700 目录 / 0600 文件，原子写）
+- 可覆盖：`config.storeFile` 指定其它路径（例如 DSH Desktop 形态指向 WSL 那份文件，见下）
 - 与 glab 的关系：插件 store 为权威源；保存时同步进 glab 客户端配置（`~/.config/glab-cli/`），删除时登出
 
 ## 安装
@@ -30,6 +31,38 @@ dsh plugin --profile web add @linxin666/dsh-gitlab-credentials@latest
 ```
 
 安装后**重启 `dsh web`**：设置页出现「GitLab 凭据」栏目，Agent 提示词自动注入本插件说明。
+
+## DSH Desktop 形态（宿主 Windows、执行 WSL）
+
+DSH Desktop 会在 **Windows 侧**加载插件，而凭据的实际消费者是 **WSL 侧**的 `glab` CLI 与
+`glab-mr-submit` 脚本。若桌面侧用缺省路径，它会写 `C:\Users\...\.dsh\gitlab-credentials.json`，
+与 WSL 那份**分叉**。因此桌面侧必须显式指向同一文件：
+
+```yaml
+# <win-home>\.dsh\profiles\desktop\cordis.patch.yml
+- id: gitlab-credentials
+  name: "@linxin666/dsh-gitlab-credentials"
+  config:
+    storeFile: //wsl.localhost/<发行版>/home/<用户>/.dsh/gitlab-credentials.json
+    announceToAgent: false   # 权威实例仍是 WSL 侧，避免两个实例都向模型自我宣告
+```
+
+```bash
+# 桌面侧安装（不能用 link:/file: 指向 WSL 路径，pnpm 会改写 UNC 为不存在的 /wsl.localhost/...）
+cd <repo>/packages/gitlab-credentials && npx tsdown
+pnpm pack --pack-destination <win-temp>          # 在 Windows 侧打包
+pnpm add --config.auto-install-peers=true <win-temp>\<tgz>   # cwd = <win-home>\.dsh\profiles\desktop
+# 并把 "@linxin666/dsh-gitlab-credentials" 追加进该 profile 的 dsh.profile.bundles
+```
+
+已知行为差异（Windows 侧）：
+
+- **保存可用**：令牌校验走 HTTP，与宿主无关；`glab` 同步会报 `glab binary not found`，
+  但代码是 **best-effort**（`routes.ts`: "glab may be absent; the store remains authoritative"），
+  令牌照常入库，界面只提示同步失败。
+- **glab CLI 会话仍由 WSL 侧维护**：Windows 侧不做 glab 同步（`glab.ts` 只查 PATH 与 `/snap/glab/*`）。
+- 依赖：桌面 profile 需能解析 `@deepseek-ai/{cordis,dsh-host-webserver,dsh-llm,dsh-settings,dsh-system-prompt,dsh-tools}`
+  与 `schemastery`（这些是构建时的 external 依赖，运行期由宿主提供）。
 
 ## Runtime 依赖 vendoring（重要）
 

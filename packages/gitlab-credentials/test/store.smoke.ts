@@ -3,9 +3,9 @@
  * summaries never leak tokens. Runs without network or glab.
  */
 import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CredentialStore } from '../src/store.ts'
+import { CredentialStore, defaultStorePath } from '../src/store.ts'
 import { DEFAULT_MR_PREFERENCES } from '../src/protocol.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'dsh-gitlab-cred-'))
@@ -46,6 +46,24 @@ try {
 
   check('remove host', store.remove('gitlab.example.com') === true)
   check('remove missing host', store.remove('gitlab.example.com') === false)
+
+  // config.storeFile 缺省时回落 ~/.dsh/gitlab-credentials.json（WSL/原生安装依赖该行为）。
+  // 桌面形态下由 config.storeFile 指到 WSL 那份文件，见 src/index.ts 的 Config.storeFile。
+  const fallback = defaultStorePath()
+  check('default store path is ~/.dsh/gitlab-credentials.json',
+    fallback === join(homedir(), '.dsh', 'gitlab-credentials.json'), fallback)
+
+  // 桌面形态：filePath 指向一个父目录尚不存在的路径时必须能自建目录（0600/0700）。
+  const deep = join(dir, 'nested', 'deeper', 'cred.json')
+  const deepStore = new CredentialStore({ filePath: deep })
+  deepStore.upsert({
+    host: 'desktop.example.com', apiProtocol: 'http', apiHost: 'desktop.example.com', gitProtocol: 'ssh',
+    token: 'TOKEN-desktop-value-9876', user: 'cx', lastChecked: '', lastError: '',
+  })
+  // 真正被强制的契约是**文件** 0600（save() 里 mkdir 0700 + 写 tmp 0600 + chmod 兜底，
+  // 但父目录权限受 umask/既有目录影响，不作为断言）。
+  check('nested filePath keeps file mode 0600', (statSync(deep).mode & 0o777) === 0o600)
+  check('nested filePath roundtrip', JSON.parse(readFileSync(deep, 'utf8')).hosts['desktop.example.com'].user === 'cx')
 } catch (error) {
   console.error('unexpected throw:', error)
   failures++

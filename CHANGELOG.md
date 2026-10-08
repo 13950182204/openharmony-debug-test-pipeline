@@ -2,6 +2,33 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.3] - 2026-10-08
+
+让 `@linxin666/dsh-gitlab-credentials`（仓库内 `packages/gitlab-credentials`）也能在
+**DSH Desktop（:19387）** 里编辑——用户要求后续在 desktop 维护该插件。
+
+### 新增 / 增强
+
+- **`Config.storeFile`**：凭据文件路径可覆盖（缺省仍为 `~/.dsh/gitlab-credentials.json`）。
+  `CredentialStore` 本就支持 `filePath` 注入（原先仅测试用），本次接线到配置并在
+  schemastery 中声明（否则会被剥离）。
+- 桌面形态配置指向 WSL 那份文件，避免"桌面写 C:\Users\...\.dsh、WSL 读 /home/cx/.dsh"
+  两份凭据分叉；同时 `announceToAgent: false`，权威实例仍是 WSL 侧，避免双实例向模型自我宣告。
+- 子包 README 增加「DSH Desktop 形态」段（配置样板、打包/安装命令、Windows 侧行为差异）。
+
+### 验证
+
+- 子包 smoke test 12 项全过（新增 3 项：缺省路径、嵌套 `filePath` 落盘与 0600）。
+- 桌面侧实测：`//wsl.localhost/.../gitlab-credentials.json` 可读，`hosts = 192.168.11.238`、
+  `user = cx`；插件工具 `gitlab_cred_status` 已在桌面会话注册，设置页出现「GitLab 凭据」。
+- 三份构建产物（仓库源 / WSL 侧 link / 桌面侧安装副本）sha 一致（`c7b086492ef6`），
+  WSL 侧未配 `storeFile` 时回落缺省路径，行为不变。
+
+### 已知行为差异（Windows 侧）
+
+- 保存可用（校验走 HTTP）；`glab` 同步报 `glab binary not found`，但为 best-effort，
+  令牌照常入库，仅界面提示同步失败；glab CLI 会话仍由 WSL 侧维护。
+
 ## [1.1.2] - 2026-10-08
 
 支持「插件在 Windows 侧加载、命令在 WSL 侧执行」的 DSH Desktop 形态（与 `dsh-wsl-workspace`
