@@ -2,6 +2,26 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.6] - 2026-10-08
+
+`mr_review_six` 在真实环境完全不可用（本次 MR 实测发现）。
+
+### 修复
+
+- **`ctx.subagents.start()` 的第一个参数传错**（`src/mr-review-tool.ts`）：该参数是
+  **provider 名**（`SubagentRuntime.expectProvider()` 按它查表），原先传的是运行标签
+  `mr-review-<类别>`，真实环境一律报
+  `no subagent provider registered for "mr-review-security"`。
+  改为传 provider 名（缺省 `fork`，可用新增配置 `subagentProvider` 覆盖为 `spawn` 等）。
+- 新增 `Config.subagentProvider`（schemastery 已声明，否则被剥离）。
+
+### 验证
+
+- 新增 `test/mr-review-tool.test.ts` 4 项：provider 名是 `fork` 而非 `mr-review-*`、
+  可被配置覆盖、每类别各起一个子代理且共用同一 provider、请求带父代理/取消信号。
+  此前该调用**无任何测试覆盖**，故编译通过与其余单测全绿都发现不了此缺陷。
+- vitest 32 → 36 通过。
+
 ## [1.1.4] - 2026-10-08
 
 打包刷新（无功能改动）：桌面 profile 原先引用的是 `1.1.2` tarball，而该包**早于**

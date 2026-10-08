@@ -21,6 +21,12 @@ export interface Config {
    */
   stateFileModel?: string
   /**
+   * 六维审查用的 subagent provider 名（`ctx.subagents.start()` 的第一个参数）。
+   * DSH 内置：`fork`（dsh-subagent-fork-in-process 默认）、`spawn`。缺省 `fork`。
+   * 注意这是 **provider 名**，不是运行标签——传错会 `no subagent provider registered`。
+   */
+  subagentProvider?: string
+  /**
    * 六维审查子代理模型档位表（可选）。索引 0 为最强档，末档为下限。
    * 缺省两档：high=deepseek-v4-pro、low=deepseek-v4-flash。
    * 注意：reasoningEffort 是 provider 全局配置，无法按子代理区分。
@@ -38,6 +44,7 @@ const ladderTierSchema = z.object({
 export const Config: z<Config> = z.object({
   stateFile: z.string().default('~/.dsh/pipeline-state.json'),
   wslPackageRoot: z.string(),
+  subagentProvider: z.string().default('fork'),
   stateFileModel: z.string(),
   reviewLadder: z.array(ladderTierSchema),
 })

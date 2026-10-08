@@ -110,8 +110,12 @@ async function runReviewer(
   category: ReviewCategory,
   tier: LadderTier | undefined,
   ladder: LadderTier[],
+  providerName: string,
 ): Promise<{ ok: boolean; text: string; tierName: string }> {
-  const run = await ctx.subagents.start(`mr-review-${category}`, {
+  // 第一个参数是 **provider 名**（ctx.subagents 按它查表），不是运行标签：
+  // 传运行名会直接 `no subagent provider registered for "<name>"` 失败。
+  // DSH 内置 provider 名：fork（dsh-subagent-fork-in-process 默认）/ spawn。
+  const run = await ctx.subagents.start(providerName, {
     prompt: [{ type: 'text', text: buildReviewPrompt(args, category) }],
     parent,
     signal,
@@ -128,6 +132,7 @@ async function runReviewer(
 
 export function registerMrReviewTool(ctx: Context, config: Config): void {
   const ladder = resolveLadder(config.reviewLadder)
+  const providerName = config.subagentProvider ?? 'fork'
 
   ctx.tools.register(defineTool({
     name: 'mr_review_six',
@@ -183,12 +188,12 @@ export function registerMrReviewTool(ctx: Context, config: Config): void {
       const results = await Promise.all(categories.map(async (category) => {
         let tierIndex = tierIndexForCategory(category, parentIndex, ladder)
         let tier = ladder[tierIndex]
-        let outcome = await runReviewer(ctx, parent, exec.signal, args, category, tier, ladder)
+        let outcome = await runReviewer(ctx, parent, exec.signal, args, category, tier, ladder, providerName)
         // 质量护栏：失败且允许重试且未到最强档 → 升一档（索引减 1）重试一次
         if (!outcome.ok && args.retryOnFail !== false && tierIndex > 0) {
           tierIndex -= 1
           tier = ladder[tierIndex]
-          outcome = await runReviewer(ctx, parent, exec.signal, args, category, tier, ladder)
+          outcome = await runReviewer(ctx, parent, exec.signal, args, category, tier, ladder, providerName)
         }
         return { category, outcome, tierName: tier?.name ?? '继承' }
       }))
