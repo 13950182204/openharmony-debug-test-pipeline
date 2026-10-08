@@ -2,7 +2,7 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
-## [1.1.1] - 2026-10-08
+## [1.1.2] - 2026-10-08
 
 支持「插件在 Windows 侧加载、命令在 WSL 侧执行」的 DSH Desktop 形态（与 `dsh-wsl-workspace`
 同一模型），并修正一处会挡住该形态的护栏与一处打包缺陷。
@@ -13,8 +13,12 @@
   - 背景：DSH Desktop 直驱 agent loop 时插件在 **Windows 侧 Node** 加载，而会话 `bash` 把命令
     转发进 **WSL**。插件用 `import.meta.url`/`homedir()` 推导出的宿主路径（`\\wsl.localhost\...`、
     `C:\Users\...`）模型跑不动。
-  - 新增配置 `wslPackageRoot`（把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 路径）与 `stateFile`
-    的 UNC 用法（Windows Node 读、WSL `python3` 写指向同一文件，实测 `stat`/`sha256` 一致）。
+  - 新增配置 `wslPackageRoot`（把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 路径），并把状态文件
+    拆成两个口径：`stateFile`（宿主 Node 读，Windows 上写 `//wsl.localhost/...`）与
+    `stateFileModel`（模型交给 `python3`，必须是 WSL 视角的 `/home/cx/...`）。
+    两者指向同一文件（实测 `stat`/`sha256` 一致），但形态必须分开——实测 UNC 形态在 WSL 里
+    既不存在，`python3 --file //wsl.localhost/...` 还会**静默输出空状态**（「（未开始）」）
+    而不报错，写进 skill 正文会让模型看到假状态。
   - `joinModelPath` 统一输出正斜杠：Windows 侧 `node:path.join` 会产出 `/home/cx/os\skills`
     这种混合路径，正是要避免的。
   - Windows 宿主且未配置 `wslPackageRoot` 时打 warn 提示，不静默降级。

@@ -92,7 +92,7 @@ export function packageRoot(): string {
  */
 export function registerVendoredSkills(
   ctx: Context,
-  config: Pick<Config, 'stateFile' | 'wslPackageRoot'>,
+  config: Pick<Config, 'stateFile' | 'wslPackageRoot' | 'stateFileModel'>,
   root: string = packageRoot(),
 ): void {
   const skillsDir = join(root, 'skills')

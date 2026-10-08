@@ -46,9 +46,28 @@ describe('resolveModelPaths', () => {
     expect(resolveModelPaths(WSL_ROOT, { wslPackageRoot: '' }).packageRoot).toBe(WSL_ROOT)
   })
 
-  it('stateFile 原样透传（宿主读写与模型执行共用同一路径）', () => {
+  it('stateFile 原样透传（宿主读取用）', () => {
     const unc = '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json'
     expect(resolveModelPaths(WSL_ROOT, { stateFile: unc }).stateFile).toBe(unc)
+  })
+
+  it('未配置 stateFileModel 时与 stateFile 相同（Linux 原生安装行为不变）', () => {
+    const p = resolveModelPaths(WSL_ROOT, { stateFile: '~/.dsh/pipeline-state.json' })
+    expect(p.stateFileModel).toBe('~/.dsh/pipeline-state.json')
+  })
+
+  it('Windows 宿主：宿主口径与模型口径分离', () => {
+    const unc = '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json'
+    const linux = '/home/cx/.dsh/pipeline-state.json'
+    const p = resolveModelPaths('/host/pkg', { stateFile: unc, stateFileModel: linux })
+    expect(p.stateFile).toBe(unc)        // 宿主 Node 打开
+    expect(p.stateFileModel).toBe(linux) // 模型交给 python3
+    expect(p.stateFile).not.toBe(p.stateFileModel)
+  })
+
+  it('空字符串的 stateFileModel 视为未配置', () => {
+    const p = resolveModelPaths(WSL_ROOT, { stateFile: '/x/state.json', stateFileModel: '' })
+    expect(p.stateFileModel).toBe('/x/state.json')
   })
 })
 
@@ -74,13 +93,17 @@ describe('Windows 宿主下的 skill 正文口径', () => {
     }
   })
 
-  it('闭环 skill 的脚本与状态文件路径同样是模型可用口径', () => {
+  it('闭环 skill 的脚本用 WSL 口径、状态文件用模型口径（不能出现 //wsl.localhost）', () => {
     const skill = buildLoopSkill({
       wslPackageRoot: WSL_ROOT,
       stateFile: '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json',
+      stateFileModel: '/home/cx/.dsh/pipeline-state.json',
     } as any, '/host/path/pkg')
+    // 脚本路径：模型在 WSL 里执行
     expect(skill.content).toContain(`python3 ${WSL_ROOT}/scripts/pipeline_state.py reset`)
-    expect(skill.content).toContain('//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json')
+    // 状态文件：必须是 WSL 视角路径——UNC 形态在 WSL 里不存在，且 python3 会静默退回空状态
+    expect(skill.content).toContain('--file /home/cx/.dsh/pipeline-state.json')
+    expect(skill.content).not.toContain('//wsl.localhost')
     expect(skill.content).not.toContain('/host/path/pkg')
   })
 })

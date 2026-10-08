@@ -19,7 +19,8 @@ export function buildLoopSkill(config: Config, root: string = packageRoot()): Sk
   // 正文里的脚本/状态路径由模型在会话 bash（宿主为 Windows 时即 WSL）里执行，
   // 因此按「模型口径」解析，而不是直接用宿主路径。见 wsl-paths.ts。
   const modelPaths = resolveModelPaths(root, config)
-  const stateFile = modelPaths.stateFile
+  // skill 正文里的状态文件路径是**模型**要交给 python3 的路径（宿主为 Windows 时即 WSL 路径）。
+  const stateFile = modelPaths.stateFileModel
   const scriptPath = modelPaths.pipelineScript
 
   const content = `# OpenHarmony 调测闭环流水线

@@ -77,11 +77,16 @@ Windows 路径、模型在 WSL 里跑不动**）：
   config:
     wslPackageRoot: /home/cx/os/openharmony-debug-test-pipeline
     stateFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json
+    stateFileModel: /home/cx/.dsh/pipeline-state.json
 ```
 
 - `wslPackageRoot`：把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 可用路径；
-- `stateFile`：写成 `//wsl.localhost/...` 形态，Windows Node 读、WSL `python3` 写**指向同一个文件**
-  （实测两侧 `stat` 与 `sha256` 一致）。
+- `stateFile`：**宿主**侧 `/pipeline status` 的 Node 读取用，写成 `//wsl.localhost/...`；
+- `stateFileModel`：**模型**执行用，必须是 WSL 视角路径（`/home/cx/...`）。
+
+两者指向同一个文件（实测两侧 `stat` 与 `sha256` 一致），但**形态必须分开**：Windows 侧的
+`//wsl.localhost/...` 在 WSL 里既不存在、`python3` 还会静默退回**空状态**而不报错——
+把 UNC 形态写进 skill 正文会让模型看到「（未开始）」这种假状态。
 
 未配置 `wslPackageRoot` 时插件会在 Windows 宿主上打一条 warn 提示。
 
@@ -127,7 +132,10 @@ systemctl --user restart deepseek-dsh-web.service
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `stateFile` | `~/.dsh/pipeline-state.json` | 流水线状态文件（跨会话持久化闭环进度） |
+| `stateFile` | `~/.dsh/pipeline-state.json` | 流水线状态文件（**宿主** Node 读取用） |
+| `stateFileModel` | 同 `stateFile` | 同上文件的**模型**执行路径；Windows 宿主上必须给成 WSL 视角路径 |
+| `wslPackageRoot` | 空 | 插件包的 WSL 路径；Windows 宿主上必填，否则 skill 正文是 Windows 路径 |
+| `reviewLadder` | 两档（pro/flash） | 六维审查子代理的模型档位表 |
 
 可在 profile 的 `cordis.patch.yml` 覆盖该行 config，或在 web GUI
 Settings → 插件配置 中调整。

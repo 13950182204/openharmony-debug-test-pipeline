@@ -26,15 +26,21 @@ export interface ModelPathConfig {
    */
   wslPackageRoot?: string
   /**
-   * 流水线状态文件路径；缺省 `~/.dsh/pipeline-state.json`。
+   * **宿主**读写用的状态文件路径；缺省 `~/.dsh/pipeline-state.json`。
    *
-   * 该值**同时**用于两处，因此 Windows 宿主上要写成两套都能读的形态
-   * （Windows Node 与 WSL 都能访问 WSL 内文件），例如
-   * `//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json`：
-   * - 宿主侧 `/pipeline status` 的 Node 读取；
-   * - skill 正文里模型要执行的 `python3 ... --file <状态文件>`。
+   * 宿主侧由 `/pipeline status` 的 Node 直接打开，Windows 宿主上要写成
+   * `//wsl.localhost/<发行版>/...` 这种 Windows 能打开的形态。
    */
   stateFile?: string
+  /**
+   * **模型**执行用的状态文件路径；缺省与 {@link stateFile} 相同。
+   *
+   * 模型在会话 bash（宿主为 Windows 时即 WSL）里把该路径交给 `python3`，所以必须是
+   * **WSL 视角**的路径（如 `/home/cx/.dsh/pipeline-state.json`）。
+   * 两者指向同一个文件但形态不同：Windows 侧的 `//wsl.localhost/...` 在 WSL 里既不存在，
+   * `python3` 还会静默退回空状态而不报错——所以 Windows 宿主上必须显式区分。
+   */
+  stateFileModel?: string
 }
 
 export interface ModelPaths {
@@ -44,8 +50,10 @@ export interface ModelPaths {
   skillsDir: string
   /** 流水线状态脚本（模型口径） */
   pipelineScript: string
-  /** 流水线状态文件（宿主读写与模型执行共用） */
+  /** 流水线状态文件——宿主读写用 */
   stateFile: string
+  /** 流水线状态文件——模型执行用（Windows 宿主上与 {@link stateFile} 形态不同） */
+  stateFileModel: string
 }
 
 /**
@@ -73,10 +81,15 @@ export function joinModelPath(base: string, ...segments: string[]): string {
 export function resolveModelPaths(hostPackageRoot: string, config: ModelPathConfig = {}): ModelPaths {
   const configured = config.wslPackageRoot
   const packageRoot = configured !== undefined && configured !== '' ? configured : hostPackageRoot
+  const stateFile = config.stateFile ?? '~/.dsh/pipeline-state.json'
+  const stateFileModel = config.stateFileModel !== undefined && config.stateFileModel !== ''
+    ? config.stateFileModel
+    : stateFile
   return {
     packageRoot,
     skillsDir: joinModelPath(packageRoot, 'skills'),
     pipelineScript: joinModelPath(packageRoot, 'scripts', 'pipeline_state.py'),
-    stateFile: config.stateFile ?? '~/.dsh/pipeline-state.json',
+    stateFile,
+    stateFileModel,
   }
 }

@@ -31,6 +31,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const resolved = {
     stateFile: config.stateFile ?? '~/.dsh/pipeline-state.json',
     wslPackageRoot: config.wslPackageRoot,
+    stateFileModel: config.stateFileModel,
   }
   registerVendoredSkills(ctx, resolved)
   registerLoopSkill(ctx, config)
@@ -41,7 +42,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     ctx.logger.warn(
       'openharmony-debug-test-pipeline: 检测到 Windows 宿主但未配置 config.wslPackageRoot——'
       + 'skill 正文里的插件路径将是 Windows 路径，模型在 WSL 里用不了；'
-      + '请在 profile 的 cordis.patch.yml 里补 wslPackageRoot（并把 stateFile 指向两处都能读的路径）。',
+      + '请在 profile 的 cordis.patch.yml 里补 wslPackageRoot，以及 stateFile（宿主读，//wsl.localhost/...）'
+      + '与 stateFileModel（模型执行，/home/cx/...）。',
     )
   }
   ctx.logger.info(
