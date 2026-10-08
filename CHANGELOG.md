@@ -2,6 +2,18 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.4] - 2026-10-08
+
+打包刷新（无功能改动）：桌面 profile 原先引用的是 `1.1.2` tarball，而该包**早于**
+「状态文件宿主/模型两口径」修复——若按 README 重装会静默回退到含假状态缺陷的版本。
+本次重新打到 `1.1.4` 并更新 profile 引用，使"装到的"与"仓库里的"一致。
+
+### 验证
+
+- `tsc --noEmit` 0 错误；vitest 32 通过；python 套件 15+14 通过。
+- 桌面 profile 的 spec 指向 `openharmony-debug-test-pipeline-1.1.4.tgz`，
+  安装副本含 `stateFileModel` 与 `wslPackageRoot` 接线。
+
 ## [1.1.3] - 2026-10-08
 
 让 `@linxin666/dsh-gitlab-credentials`（仓库内 `packages/gitlab-credentials`）也能在
