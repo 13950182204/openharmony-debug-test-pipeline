@@ -2,6 +2,30 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.9] - 2026-10-10
+
+**修复一个发布阻断缺陷**：子包发布后会 `npm install` 直接失败。
+
+### 修复
+
+- 子包 `postinstall` 指向 `scripts/link-runtime-deps.mjs`，但 `files` 白名单不含 `scripts/`
+  （该脚本是仓库内的开发期 vendoring，不应发布）——消费者安装时 postinstall 找不到文件，
+  `npm error command sh -c node scripts/link-runtime-deps.mjs` 致 **npm install 以 1 退出**。
+  改为内联判断：文件存在才执行，缺失即静默跳过（仓库内开发行为不变，实测仍完成 vendoring）。
+- 子包版本 0.1.0 → 0.1.1。
+
+### 验证（真实消费者场景）
+
+以打包产物为输入，在**干净目录**用 npm 安装（不继承仓库依赖）：
+
+```
+npm install ./pipeline.tgz ./superjunier-dsh-gitlab-credentials-0.1.1.tgz
+→ added 28 packages, EXIT=0
+```
+
+两个插件均可加载（`apply = function`），依赖 `@deepseek-ai/dsh-tools` / `schemastery` /
+`js-yaml` 由声明自动带入，客户端半身 `id` 与包名一致。
+
 ## [1.1.8] - 2026-10-10
 
 为发布到 npm 做的前置修正（含改名）。
