@@ -2,6 +2,34 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.8] - 2026-10-10
+
+为发布到 npm 做的前置修正（含改名）。
+
+### 变更
+
+- **子包改名为 `@superjunier/dsh-gitlab-credentials`**：原名 `@linxin666/dsh-gitlab-credentials`
+  的 scope 属他人所有，`npm publish` 必然 403。同步更新 `cordis.patch.yml`、README、以及
+  WSL/桌面两套 profile 的依赖名与 bundles。**`insert` 行的 `id: gitlab-credentials` 保持不变**，
+  现有 `cordis.patch.yml` 配置覆盖无需改动。
+- **`tsdown.config.ts` 不再硬编码包名**：改从 `package.json` 读取。`lib/client.js` 的
+  `ModuleLoader.load({ id })` 必须与包名一致，否则浏览器半身静默不注册（服务端正常、
+  设置页不出现）——双写必然在改名时漏改。
+- **运行期依赖从 devDependencies 移入 dependencies**（两个包都改）：
+  `lib/*.js` 有裸 `import '@deepseek-ai/dsh-tools'`（主包 `mr-review-tool.js`、子包 `index.js`）
+  与 `schemastery`，但此前只在 devDependencies —— 消费者装完会 `MODULE_NOT_FOUND`。
+  本机未暴露是因为本地 `node_modules` 已就位。
+- **两个包都加 `prepublishOnly`**：`lib/` 被 `.gitignore` 忽略，没有该钩子时一次全新克隆的
+  `npm publish` 会发出**不含 lib 的空包**（而 `dsh.bundle` 指向的正是 `lib/index.js`）。
+- 复核：`pnpm pack` **不剥离**生命周期脚本（早先 tarball 缺字段是因为它们打包于本次改动之前）。
+
+### 验证
+
+- 主包：vitest 36 通过、python 15+15 通过、tsc 0 错误；打包项 57（无 `.bak`/`.pyc`）。
+- 子包：tsc 0 错误、store smoke 12 项通过；产物 `id` 与包名一致。
+- WSL profile 与桌面 profile 均已切到新名，组合树与加载测试通过
+  （`name = gitlab-credentials`、`apply = function`）。
+
 ## [1.1.7] - 2026-10-08
 
 发布前敏感数据复查发现：**本机备份文件被打进了发布产物**。
@@ -57,7 +85,7 @@
 
 ## [1.1.3] - 2026-10-08
 
-让 `@linxin666/dsh-gitlab-credentials`（仓库内 `packages/gitlab-credentials`）也能在
+让 `@superjunier/dsh-gitlab-credentials`（仓库内 `packages/gitlab-credentials`）也能在
 **DSH Desktop（:19387）** 里编辑——用户要求后续在 desktop 维护该插件。
 
 ### 新增 / 增强

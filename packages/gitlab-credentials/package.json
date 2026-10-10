@@ -1,5 +1,5 @@
 {
-  "name": "@linxin666/dsh-gitlab-credentials",
+  "name": "@superjunier/dsh-gitlab-credentials",
   "description": "GitLab credentials for the dsh web GUI: per-host token storage (~/.dsh/gitlab-credentials.json, 0600), validation against the GitLab API, automatic glab CLI sync, a settings-page section (credentials + MR preferences), and a read-only agent status surface. Tokens never enter conversation logs.",
   "version": "0.1.0",
   "type": "module",
@@ -9,7 +9,8 @@
     "postinstall": "node scripts/link-runtime-deps.mjs",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/store.smoke.ts"
+    "test": "tsx test/store.smoke.ts",
+    "prepublishOnly": "npm run build"
   },
   "exports": {
     ".": {
@@ -43,7 +44,10 @@
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "schemastery": "^3.18.0"
+  },
   "vendored": {
     "@deepseek-ai/dsh-settings": "runtime tree",
     "@deepseek-ai/dsh-tools": "runtime tree",

@@ -27,7 +27,7 @@ pnpm install && npx tsdown          # postinstall 自动 vendoring runtime SDK�
 dsh plugin --profile web add link:$(pwd)
 
 # 发布版（发布到 npm 后）
-dsh plugin --profile web add @linxin666/dsh-gitlab-credentials@latest
+dsh plugin --profile web add @superjunier/dsh-gitlab-credentials@latest
 ```
 
 安装后**重启 `dsh web`**：设置页出现「GitLab 凭据」栏目，Agent 提示词自动注入本插件说明。
@@ -41,7 +41,7 @@ DSH Desktop 会在 **Windows 侧**加载插件，而凭据的实际消费者是 
 ```yaml
 # <win-home>\.dsh\profiles\desktop\cordis.patch.yml
 - id: gitlab-credentials
-  name: "@linxin666/dsh-gitlab-credentials"
+  name: "@superjunier/dsh-gitlab-credentials"
   config:
     storeFile: //wsl.localhost/<发行版>/home/<用户>/.dsh/gitlab-credentials.json
     announceToAgent: false   # 权威实例仍是 WSL 侧，避免两个实例都向模型自我宣告
@@ -52,7 +52,7 @@ DSH Desktop 会在 **Windows 侧**加载插件，而凭据的实际消费者是 
 cd <repo>/packages/gitlab-credentials && npx tsdown
 pnpm pack --pack-destination <win-temp>          # 在 Windows 侧打包
 pnpm add --config.auto-install-peers=true <win-temp>\<tgz>   # cwd = <win-home>\.dsh\profiles\desktop
-# 并把 "@linxin666/dsh-gitlab-credentials" 追加进该 profile 的 dsh.profile.bundles
+# 并把 "@superjunier/dsh-gitlab-credentials" 追加进该 profile 的 dsh.profile.bundles
 ```
 
 已知行为差异（Windows 侧）：

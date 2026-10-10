@@ -10,4 +10,4 @@
 # register the settings-page section.
 - insert:
     - id: gitlab-credentials
-      name: '@linxin666/dsh-gitlab-credentials'
+      name: '@superjunier/dsh-gitlab-credentials'

@@ -113,6 +113,27 @@ const declared = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8
  * 版本对齐、自动重链」来保证。
  */
 if (declared !== undefined && declared !== runtime.version) {
+  /**
+   * 版本不一致时必须**确保依赖树回到 pnpm 解析结果**，而不只是"不新建链接"：
+   * 旧版本的本脚本（声明与运行时同版时）可能已经在这里留下一条指向共享运行时的链接，
+   * 那条链接会让 tsc 按运行时那一代解析 `dsh-tools`，与 pnpm 解析出的声明版本冲突
+   * （实测报 `[BRAND] is missing`）。所以这里主动识别并移除**本脚本自己留下的**链接
+   * （realpath 落在 `~/.dsh/` 下），交给 pnpm 恢复。
+   */
+  let stale = false
+  try {
+    const resolvedTarget = realpathSync(target)
+    stale = lstatSync(target).isSymbolicLink()
+      && resolvedTarget.startsWith(dshHome)
+      && resolvedTarget !== realpathSync(source)
+  } catch {
+    // 无条目或悬空链接：交给 pnpm。
+  }
+  if (stale) {
+    rmSync(target, { recursive: true, force: true })
+    console.log(`${NAME} 移除陈旧的运行时链接（声明 ${declared} ≠ 活动运行时 ${runtime.version}）：请再跑一次 \`pnpm install\` 让 pnpm 按声明版本恢复。`)
+    process.exit(0)
+  }
   console.log(`${NAME} 声明 ${declared} ≠ 活动运行时 ${runtime.version}：跳过 dsh-tools 重链，依赖树保持 pnpm 解析结果（类型检查基线一致）。`)
   console.log(`${NAME} 运行时升到 ${declared} 后重跑 \`pnpm run link-runtime-deps\` 即可自动对齐。`)
   process.exit(0)
