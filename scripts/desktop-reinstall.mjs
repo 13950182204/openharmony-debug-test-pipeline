@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+/**
+ * 在 **Windows 侧**把本插件与 `@superjunier/dsh-gitlab-credentials` 重装进 DSH Desktop 的
+ * desktop profile。用法（在 Windows 上跑，Node 任意 20+）：
+ *
+ *   node <repo>/scripts/desktop-reinstall.mjs [--profile <名字>] [--dry-run]
+ *
+ * 为什么需要这个脚本，而不是直接在 profile 目录 `pnpm add`：
+ *
+ * 1. **PATH 必须显式补上 node 目录**。DSH Desktop 自带的 pnpm 在派生子进程时不会把
+ *    node 放进子环境 PATH，于是两包 `postinstall` 里的 `node ...` 一律报
+ *    `'node' 不是内部或外部命令`（实测）。只补 `…/dependencies/node/bin`，
+ *    **绝不把 Node 根目录加进 PATH**——Node 根目录同时含 `bash.exe`/`wsl.exe`，
+ *    一旦进入 PATH 会顶掉 WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe 对
+ *    `\\wsl.localhost\…` 路径无法工作，会连带打断会话里的 bash 工具。
+ *
+ * 2. **依赖树必须保持"每个核心包只有一个版本"**。本插件的 `@deepseek-ai/dsh-tools`
+ *    是精确钉版本（与 runtime 的 asar 副本同版本）；一旦 profile 里出现第二个版本的
+ *    核心包，就会出现"同版本号但不同模块 URL"的隐患
+ *    （参见知识库《DSH-rc1工具调度器与Web profile重复模块故障》）。
+ *    脚本在安装后强制做一次副本矩阵自检，多副本即失败退出。
+ *
+ * 3. 安装完成后 profile 的 `dsh.profile.bundles` 必须含这两个包名，否则不会加载。
+ *    脚本会校正并打印最终清单。
+ */
+
+import { spawnSync } from 'node:child_process'
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+
+const PLUGINS = [
+  { name: 'openharmony-debug-test-pipeline', tgz: 'openharmony-debug-test-pipeline-1.1.10.tgz' },
+  { name: '@superjunier/dsh-gitlab-credentials', tgz: 'superjunier-dsh-gitlab-credentials-0.1.1.tgz' },
+]
+
+/** 解析 DSH Desktop 自带的 runtime 目录（含 node 与 pnpm）。 */
+function resolveRuntime() {
+  const candidates = [
+    join(process.env.LOCALAPPDATA ?? '', 'Programs', 'DeepSeek Harness', 'resources', 'runtime'),
+    join('C:', 'Users', process.env.USERNAME ?? '', 'AppData', 'Local', 'Programs', 'DeepSeek Harness', 'resources', 'runtime'),
+  ]
+  for (const base of candidates) {
+    if (base === '' || base.startsWith(':')) continue
+    const node = join(base, 'primary-runtime', 'dependencies', 'node', 'bin', 'node.exe')
+    const pnpm = join(base, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.cjs')
+    if (existsSync(node) && existsSync(pnpm)) return { node, pnpm, nodeBin: dirname(node) }
+  }
+  return undefined
+}
+
+/** 每个 `@deepseek-ai/*` 包在 profile 树里的版本与嵌套副本（自检用）。 */
+function auditCoreCopies(nodeModules) {
+  const scope = join(nodeModules, '@deepseek-ai')
+  if (!existsSync(scope)) return { versions: {}, nested: [] }
+  const versions = {}
+  const nested = []
+  for (const name of readdirSync(scope)) {
+    const manifest = join(scope, name, 'package.json')
+    if (!existsSync(manifest)) continue
+    versions[name] = JSON.parse(readFileSync(manifest, 'utf8')).version
+    const inner = join(scope, name, 'node_modules', '@deepseek-ai')
+    if (!existsSync(inner)) continue
+    for (const dep of readdirSync(inner)) nested.push(`${name} -> ${dep}`)
+  }
+  return { versions, nested }
+}
+
+const argv = process.argv.slice(2)
+const dryRun = argv.includes('--dry-run')
+const profileIdx = argv.indexOf('--profile')
+const profile = profileIdx >= 0 ? argv[profileIdx + 1] : 'desktop'
+const dshHome = join(homedir(), '.dsh')
+const profileDir = join(dshHome, 'profiles', profile)
+const storeDir = join(dshHome, 'plugins')
+const nodeModules = join(profileDir, 'node_modules')
+
+if (!existsSync(join(profileDir, 'package.json'))) {
+  console.error(`找不到 profile：${profileDir}`)
+  process.exit(1)
+}
+
+const runtime = resolveRuntime()
+if (runtime === undefined) {
+  console.error('找不到 DSH Desktop 自带的 runtime（期望 …/resources/runtime/primary-runtime/dependencies）。')
+  process.exit(1)
+}
+
+console.log(`profile   : ${profileDir}`)
+console.log(`runtime   : ${runtime.node}`)
+console.log(`plugins   : ${storeDir}`)
+
+const missing = PLUGINS.filter((p) => !existsSync(join(storeDir, p.tgz)))
+if (missing.length > 0) {
+  console.error(`缺少 tarball：${missing.map((p) => p.tgz).join(', ')}（先 pnpm pack --pack-destination ${storeDir}）`)
+  process.exit(1)
+}
+
+// 1) 清单：登记依赖并确保进 bundles（少了 bundles 插件不会加载）
+const manifestPath = join(profileDir, 'package.json')
+const backupPath = `${manifestPath}.bak-desktop-reinstall`
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+copyFileSync(manifestPath, backupPath)
+manifest.dependencies ??= {}
+for (const { name, tgz } of PLUGINS) {
+  manifest.dependencies[name] = `file:${join(storeDir, tgz).replace(/\\/g, '/')}`
+}
+manifest.dsh ??= {}
+manifest.dsh.profile ??= {}
+const bundles = (manifest.dsh.profile.bundles ??= [])
+for (const { name } of PLUGINS) if (!bundles.includes(name)) bundles.push(name)
+if (!dryRun) writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+console.log(`清单已更新（备份：${backupPath}），bundles=${bundles.length}`)
+
+// 2) 安装：PATH 里只加 node 目录（见文件头注释的 bash.exe 陷阱）
+const env = { ...process.env, PATH: `${runtime.nodeBin};${process.env.PATH ?? ''}` }
+if (dryRun) {
+  console.log('[dry-run] 跳过安装')
+  process.exit(0)
+}
+const result = spawnSync(runtime.node, [runtime.pnpm, 'install', '--config.auto-install-peers=true'], {
+  cwd: profileDir,
+  stdio: 'inherit',
+  env,
+})
+console.log('install exit =', result.status)
+
+// 3) 自检
+const audit = auditCoreCopies(nodeModules)
+const coreVersions = Object.values(audit.versions)
+const distinct = new Set(coreVersions)
+console.log(`核心包 ${Object.keys(audit.versions).length} 个，版本种类 ${distinct.size}：`, [...distinct].join(', '))
+if (audit.nested.length > 0) {
+  console.error('✗ 存在嵌套核心包副本：', audit.nested.join('; '))
+  process.exit(1)
+}
+const missingPlugins = PLUGINS.filter((p) => !existsSync(join(nodeModules, p.name, 'package.json')))
+if (missingPlugins.length > 0) {
+  console.error('✗ 插件未就位：', missingPlugins.map((p) => p.name).join(', '))
+  process.exit(1)
+}
+for (const { name } of PLUGINS) {
+  const v = JSON.parse(readFileSync(join(nodeModules, name, 'package.json'), 'utf8')).version
+  console.log(`✓ ${name}@${v}`)
+}
+console.log('完成。重启 DSH Desktop 后生效。')

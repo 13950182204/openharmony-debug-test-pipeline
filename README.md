@@ -159,9 +159,27 @@ Settings → 插件配置 中调整。
 ```bash
 pnpm install
 pnpm build          # tsc 产出 lib/（typescript 5.7 rewriteRelativeImportExtensions）
-pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件
+pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件 / provider 接线
 pnpm test:python    # vendored skill 自带的 python 单测（ci_orchestrator / glab）
 ```
+
+### Windows 侧重装（DSH Desktop）
+
+在 Windows 上跑（Node 20+ 任意）：`node scripts/desktop-reinstall.mjs [--profile desktop] [--dry-run]`
+
+它做三件手工容易做错的事：
+
+1. **显式补 PATH**：DSH Desktop 自带 pnpm 派生子进程时不会把 `node` 放进子环境 PATH，
+   两包 `postinstall` 里的 `node …` 会一律报 `'node' 不是内部或外部命令`（实测）。
+   只补 `…/dependencies/node/bin`——**绝不把 Node 根目录加进 PATH**：该目录同时含
+   `bash.exe`/`wsl.exe`，进了 PATH 会顶掉 WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe
+   对 `\\wsl.localhost\…` 路径无法工作，会连带打断会话的 bash 工具。
+2. **保证"每个核心包只有一个版本"**：本插件的 `@deepseek-ai/dsh-tools` 是精确钉版（与
+   runtime 的 asar 副本同版本）。安装后脚本强制做副本矩阵自检，出现嵌套副本即失败退出
+   （参见知识库《DSH-rc1工具调度器与Web profile重复模块故障》：同版本号 ≠ 同模块实例）。
+3. **校正 `dsh.profile.bundles`**：依赖装了但没进 bundles 就不会加载；脚本会补齐并打印清单。
+
+安装完成后**重启 DSH Desktop** 生效。
 
 ## DSH 定制清单（相对 ~/.codex/skills 原版的改造）
 
