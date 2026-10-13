@@ -2,6 +2,39 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.10] - 2026-10-13
+
+重装两个插件（desktop profile）时暴露的两个真异常——都属于「先修复再安装」的范畴。
+
+### 修复
+
+- **`link-runtime-dsh-tools.mjs` 的版本守卫在 1.1.9 后整体失效**（`scripts/`）
+  1.1.9 把 `@deepseek-ai/dsh-tools` 从 devDependencies 挪到 dependencies，而脚本仍只读
+  devDependencies → 读到 `undefined` → 守卫失效、**无条件**把依赖树链到活动运行时。
+  实测后果：仓库里 0.1.2-rc.1 的 `dsh-tools` 与 0.2.0-rc.2 的 `dsh-session`/`dsh-agent`
+  混用，`pnpm run typecheck` 崩在 `Property '[BRAND]' is missing`。
+  现在同时读 `dependencies` 与 `devDependencies`。
+- **陈旧运行时链接不再被"跳过"而是被清理**（同上）
+  原清理判据要求 `realpath(target) === realpath(source)`；声明版本与运行时不一致时旧链接
+  指向**另一个** runtime 位置，判据恒 false，于是"跳过重链"把错误世代留在原地，`pnpm install`
+  也不会修它。改为识别**任何** realpath 落在 `~/.dsh/` 下的链接并移除，交回 pnpm。
+- **两包 postinstall 在 Windows 上必然失败**（`package.json` ×2）
+  pnpm 执行生命周期脚本时派生的环境 PATH 里既没有 `node` 也没有 `pnpm`（实测 `'node' 不是
+  内部或外部命令`），因此 `node scripts/...` 这类外层按名字调用必然失败。改为
+  `node -e "...execFileSync(process.execPath,...)"`，内层不再依赖 PATH。
+  注意：本次安装**插件本身是装好的**（27 个包全部落盘），仅这两个钩子失败，属非致命。
+
+### 验证（按知识库《DSH-rc1工具调度器与Web profile重复模块故障》的验收口径）
+
+- desktop profile 的 hoisted 树里每个 `@deepseek-ai` 核心包**只有一个版本**、全部 `0.2.0-rc.2`，
+  与 runtime 的 asar 副本同版本；无嵌套副本。
+- 两个插件都解析到**同一份** `@deepseek-ai/dsh-tools`（profile 顶层），且二者只用其纯函数
+  `defineTool`——`defineTool` 经查不引用 `TOOL_RUNTIME_SCHEDULER`、无模块级状态，因此
+  "同版本但不同模块 URL"不会造成 scheduler Symbol 身份冲突（该故障需模块自己把 Symbol
+  交给另一个副本的 registry，本插件不做此事）。
+- vitest 36 → 40（新增 `test/link-runtime-guard.test.ts` 4 项锁住上述守卫）；
+  python 15+15；子包 smoke 全过。
+
 ## [1.1.9] - 2026-10-10
 
 **修复一个发布阻断缺陷**：子包发布后会 `npm install` 直接失败。

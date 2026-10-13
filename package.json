@@ -1,6 +1,6 @@
 {
   "name": "openharmony-debug-test-pipeline",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "OpenHarmony 修改-调试-测试闭环 DSH 插件：聚合分诊/修复/MR/CI/OTA/回归六个 skill 模块与八阶段编排，各模块可独立调用",
   "type": "module",
   "main": "lib/index.js",
@@ -41,8 +41,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "postinstall": "node scripts/link-runtime-dsh-tools.mjs",
-    "link-runtime-deps": "node scripts/link-runtime-dsh-tools.mjs",
+    "postinstall": "node -e \"const f=require('fs'),p='scripts/link-runtime-dsh-tools.mjs';if(f.existsSync(p)){require('child_process').execFileSync(process.execPath,[p],{stdio:'inherit'})}\"",
+    "link-runtime-deps": "node -e \"const f=require('fs'),p='scripts/link-runtime-dsh-tools.mjs';if(f.existsSync(p)){require('child_process').execFileSync(process.execPath,[p],{stdio:'inherit'})}\"",
     "build": "rm -rf lib && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

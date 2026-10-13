@@ -100,7 +100,35 @@ if (runtime === undefined) {
 }
 
 const source = runtime.dir
-const declared = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')).devDependencies?.['@deepseek-ai/dsh-tools']
+const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'))
+/**
+ * 声明版本必须同时看 `dependencies` 与 `devDependencies`。
+ *
+ * 1.1.9 把 `@deepseek-ai/dsh-tools` 从 devDependencies 挪到 dependencies（发布 npm
+ * 前置修正），而本脚本原先只读 devDependencies → 读到 `undefined` → 版本守卫整体
+ * 失效、无条件把依赖树链到活动运行时。实测后果：仓库里出现 0.1.2-rc.1 的 dsh-tools
+ * 与 0.2.0-rc.2 的 dsh-session/dsh-agent 混用，typecheck 报 `[BRAND] is missing`。
+ */
+const declared = manifest.dependencies?.['@deepseek-ai/dsh-tools']
+  ?? manifest.devDependencies?.['@deepseek-ai/dsh-tools']
+
+/**
+ * 本脚本在 `node_modules/@deepseek-ai/dsh-tools` 上留下的是**符号链接**，realpath 落在
+ * `~/.dsh/` 下。凡是这样的条目都属于"运行时链接"，需要在版本口径改变时清掉，交给 pnpm
+ * 按声明的版本恢复。
+ *
+ * 注意这里**不能**用 `realpath(target) === realpath(source)` 当判据（早期实现就是这么写的）：
+ * 声明版本与运行时版本不一致时，旧链接指向的是**另一个** runtime 位置，判据恒为 false，
+ * 于是"跳过重链"却把错误世代的 dsh-tools 留在原地——实测表现为
+ * `pnpm install` 后 typecheck 报 `[BRAND] is missing`。
+ */
+function isRuntimeLink() {
+  try {
+    return lstatSync(target).isSymbolicLink() && realpathSync(target).startsWith(dshHome)
+  } catch {
+    return false // 无条目或悬空链接：无可清理。
+  }
+}
 
 /**
  * 链接只在「声明版本 == 活动运行时版本」时执行。
@@ -112,30 +140,21 @@ const declared = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8
  * 顶掉，报 `[BRAND] is missing`）。运行期的 Symbol 一致性由「运行时升级后
  * 版本对齐、自动重链」来保证。
  */
-if (declared !== undefined && declared !== runtime.version) {
-  /**
-   * 版本不一致时必须**确保依赖树回到 pnpm 解析结果**，而不只是"不新建链接"：
-   * 旧版本的本脚本（声明与运行时同版时）可能已经在这里留下一条指向共享运行时的链接，
-   * 那条链接会让 tsc 按运行时那一代解析 `dsh-tools`，与 pnpm 解析出的声明版本冲突
-   * （实测报 `[BRAND] is missing`）。所以这里主动识别并移除**本脚本自己留下的**链接
-   * （realpath 落在 `~/.dsh/` 下），交给 pnpm 恢复。
-   */
-  let stale = false
-  try {
-    const resolvedTarget = realpathSync(target)
-    stale = lstatSync(target).isSymbolicLink()
-      && resolvedTarget.startsWith(dshHome)
-      && resolvedTarget !== realpathSync(source)
-  } catch {
-    // 无条目或悬空链接：交给 pnpm。
-  }
-  if (stale) {
+const versionMismatch = declared !== undefined && declared !== runtime.version
+if (versionMismatch || (declared === undefined && isRuntimeLink())) {
+  if (isRuntimeLink()) {
     rmSync(target, { recursive: true, force: true })
-    console.log(`${NAME} 移除陈旧的运行时链接（声明 ${declared} ≠ 活动运行时 ${runtime.version}）：请再跑一次 \`pnpm install\` 让 pnpm 按声明版本恢复。`)
+    if (versionMismatch) {
+      console.log(`${NAME} 移除指向活动运行时的 dsh-tools 链接（声明 ${declared} ≠ 活动运行时 ${runtime.version}）：请再跑一次 \`pnpm install\` 让 pnpm 按声明版本恢复。`)
+    } else {
+      console.log(`${NAME} package.json 未声明 @deepseek-ai/dsh-tools：移除运行时链接，交给 pnpm。`)
+    }
     process.exit(0)
   }
-  console.log(`${NAME} 声明 ${declared} ≠ 活动运行时 ${runtime.version}：跳过 dsh-tools 重链，依赖树保持 pnpm 解析结果（类型检查基线一致）。`)
-  console.log(`${NAME} 运行时升到 ${declared} 后重跑 \`pnpm run link-runtime-deps\` 即可自动对齐。`)
+  if (versionMismatch) {
+    console.log(`${NAME} 声明 ${declared} ≠ 活动运行时 ${runtime.version}：跳过 dsh-tools 重链，依赖树保持 pnpm 解析结果（类型检查基线一致）。`)
+    console.log(`${NAME} 运行时升到 ${declared} 后重跑 \`pnpm run link-runtime-deps\` 即可自动对齐。`)
+  }
   process.exit(0)
 }
 
