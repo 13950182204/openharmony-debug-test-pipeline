@@ -2,6 +2,36 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.14] - 2026-10-14
+
+把 `scripts/desktop-reinstall.mjs` 升级为**可反复一键恢复**：desktop profile 在本机被重置过
+多次（每次都会丢掉 `dsh.profile.bundles`、依赖，以及 `cordis.patch.yml` 里的插件配置行），
+旧版助手有两处在重置面前会失效。
+
+### 修复 / 增强
+
+- **版本不再写死**（关键）：旧版把 tarball 文件名钉在 `1.1.10` / `0.1.1`，仓库升到 1.1.13 /
+  0.1.2 后助手会去找一个不存在的文件并直接 `exit 1`。现在从各包自己的 `package.json`
+  现读版本，并派生 tarball 名（scope 按 pnpm 规则用 `-` 连接）。
+- **tarball 缺失就地重打包**：`~/.dsh/plugins` 会被 profile 重置连带删除（本机已发生多次），
+  旧版只报"缺少 tarball"让人手工打。现在缺失即用 DSH 自带 pnpm 现场 `pack`，
+  一条命令从零恢复。
+- **补回插件配置行**：profile 重置会连 `cordis.patch.yml` 里 `oh-debug-pipeline` 与
+  `gitlab-credentials` 的 config 一起丢掉，而这两行是"skill 正文路径可用"的前提
+  （宿主 Windows / 执行 WSL：`wslPackageRoot`、`stateFile`、`stateFileModel`、`storeFile`、
+  `announceToAgent`）。现在缺失即按默认值补回、写前先备份，已存在则不改动（尊重用户改过的值）。
+- 安装后自检改为**比对仓库版本与实际安装版本**，不一致即非零退出（旧版只打印实际版本）。
+
+### 验证（本轮实测）
+
+- 干跑零写盘（无备份产生、不创建 plugins 目录、不改 patch）。
+- 正式跑：重打包两个 tarball → 登记 2 插件 + 4 宿主 SDK 包 → 补 2 条配置行 →
+  `RESOLVE_OK`（插件所需 9 个依赖全部可解析）→ 副本矩阵 26 包 / 0 嵌套副本 / 仅 4 种版本
+  （`0.2.0-rc.2` 统一）。
+- 两插件版本与仓库一致：`openharmony-debug-test-pipeline@1.1.13`、
+  `@superjunier/dsh-gitlab-credentials@0.1.2`；6 个 OpenHarmony skill 与
+  `mr_review_six`、`gitlab_cred_status` 工具已在新注册代际中生效。
+
 ## [1.1.13] - 2026-10-14
 
 修复「用 GitHub 仓库地址安装插件」不可用的问题（实测发现两个独立原因）。

@@ -25,14 +25,29 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/**
+ * 两个分发入口。**版本从各自 package.json 现读**，不写死——写死版本会在
+ * 仓库升版后让助手去找一个不存在的 tarball 文件名（本脚本第一版就是这样，
+ * 在 1.1.13 上直接失败）。
+ *
+ * `dir` 是打包目录；tarball 文件名沿用 pnpm pack 的规则（scope 用 `-` 连接）。
+ */
 const PLUGINS = [
-  { name: 'openharmony-debug-test-pipeline', tgz: 'openharmony-debug-test-pipeline-1.1.10.tgz' },
-  { name: '@superjunier/dsh-gitlab-credentials', tgz: 'superjunier-dsh-gitlab-credentials-0.1.1.tgz' },
+  { name: 'openharmony-debug-test-pipeline', dir: REPO },
+  { name: '@superjunier/dsh-gitlab-credentials', dir: join(REPO, 'packages', 'gitlab-credentials') },
 ]
+
+/** pnpm pack 对带 scope 的包名所用的 tarball 文件名。 */
+function tgzName(name, version) {
+  return `${name.replace(/^@/, '').replace(/\//g, '-')}-${version}.tgz`
+}
 
 /**
  * `dsh-wsl-workspace` 在启动期直接 import 的宿主 SDK 包。
@@ -109,11 +124,27 @@ console.log(`profile   : ${profileDir}`)
 console.log(`runtime   : ${runtime.node}`)
 console.log(`plugins   : ${storeDir}`)
 
-const missing = PLUGINS.filter((p) => !existsSync(join(storeDir, p.tgz)))
-if (missing.length > 0) {
-  console.error(`缺少 tarball：${missing.map((p) => p.tgz).join(', ')}（先 pnpm pack --pack-destination ${storeDir}）`)
-  process.exit(1)
+// 0) 解析每个入口的包名/版本，tarball 缺失就**就地重打包**——这样即使
+//    `~/.dsh/plugins` 被清理（本机发生过多次），助手仍是一条命令可恢复。
+const entries = PLUGINS.map(({ name, dir }) => {
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+  return { name, dir, version: manifest.version, tgz: tgzName(name, manifest.version), packed: false }
+})
+for (const entry of entries) {
+  const path = join(storeDir, entry.tgz)
+  if (existsSync(path)) continue
+  console.log(`tarball 缺失，重新打包：${entry.tgz}`)
+  if (dryRun) { entry.packed = true; continue }
+  const r = spawnSync(runtime.node, [runtime.pnpm, 'pack', '--pack-destination', storeDir], {
+    cwd: entry.dir, stdio: 'inherit', timeout: 400000,
+  })
+  if (r.status !== 0 || !existsSync(path)) {
+    console.error(`✗ 打包失败：${entry.name}（exit ${r.status}）`)
+    process.exit(1)
+  }
+  entry.packed = true
 }
+console.log('插件版本：', entries.map((e) => `${e.name}@${e.version}`).join(' | '))
 
 // 1) 清单：登记依赖并确保进 bundles（少了 bundles 插件不会加载）
 const manifestPath = join(profileDir, 'package.json')
@@ -121,18 +152,58 @@ const backupPath = `${manifestPath}.bak-desktop-reinstall`
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 if (!dryRun) copyFileSync(manifestPath, backupPath)
 manifest.dependencies ??= {}
-for (const { name, tgz } of PLUGINS) {
+for (const { name, tgz } of entries) {
   manifest.dependencies[name] = `file:${join(storeDir, tgz).replace(/\\/g, '/')}`
 }
 manifest.dsh ??= {}
 manifest.dsh.profile ??= {}
 const bundles = (manifest.dsh.profile.bundles ??= [])
-for (const { name } of PLUGINS) if (!bundles.includes(name)) bundles.push(name)
+for (const { name } of entries) if (!bundles.includes(name)) bundles.push(name)
 if (dryRun) {
-  console.log(`[dry-run] 清单将登记 ${PLUGINS.length} 个插件 + ${HOST_SDK.length} 个宿主 SDK 包，bundles=${bundles.length}`)
+  console.log(`[dry-run] 清单将登记 ${entries.length} 个插件 + ${HOST_SDK.length} 个宿主 SDK 包，bundles=${bundles.length}`)
 } else {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
   console.log(`清单已更新（备份：${backupPath}），bundles=${bundles.length}`)
+}
+
+// 1b) 配置行：profile 重置会连 `cordis.patch.yml` 里的插件配置一起丢掉，而这两行是
+//     "skill 正文路径可用"的前提（宿主 Windows / 执行 WSL）。缺失就补回默认值，
+//     存在则不动（尊重用户改过的值）。
+const patchPath = join(profileDir, 'cordis.patch.yml')
+const PLUGIN_CONFIG = {
+  'oh-debug-pipeline': {
+    name: 'openharmony-debug-test-pipeline',
+    config: {
+      wslPackageRoot: '/home/cx/os/openharmony-debug-test-pipeline',
+      stateFile: '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json',
+      stateFileModel: '/home/cx/.dsh/pipeline-state.json',
+    },
+  },
+  'gitlab-credentials': {
+    name: '@superjunier/dsh-gitlab-credentials',
+    config: {
+      storeFile: '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/gitlab-credentials.json',
+      announceToAgent: false,
+    },
+  },
+}
+const patchText = existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : ''
+const missingConfig = Object.entries(PLUGIN_CONFIG).filter(([id]) => !patchText.includes(`id: ${id}`))
+if (missingConfig.length > 0) {
+  const block = missingConfig.map(([id, spec]) => {
+    const lines = [`- id: ${id}`, `  name: "${spec.name}"`, '  config:']
+    for (const [k, v] of Object.entries(spec.config)) lines.push(`    ${k}: ${v}`)
+    return lines.join('\n')
+  }).join('\n')
+  if (dryRun) {
+    console.log(`[dry-run] 将补 ${missingConfig.length} 条插件配置行：${missingConfig.map(([id]) => id).join(', ')}`)
+  } else {
+    if (!dryRun) copyFileSync(patchPath, `${patchPath}.bak-desktop-reinstall`)
+    writeFileSync(patchPath, `${patchText.trimEnd()}\n\n${block}\n`, 'utf8')
+    console.log(`已补插件配置行（备份：${patchPath}.bak-desktop-reinstall）：${missingConfig.map(([id]) => id).join(', ')}`)
+  }
+} else {
+  console.log('插件配置行已存在，未改动')
 }
 
 // 2) 安装：PATH 里只加 node 目录（见文件头注释的 bash.exe 陷阱）
@@ -180,13 +251,15 @@ if (audit.nested.length > 0) {
   console.error('✗ 存在嵌套核心包副本：', audit.nested.join('; '))
   process.exit(1)
 }
-const missingPlugins = PLUGINS.filter((p) => !existsSync(join(nodeModules, p.name, 'package.json')))
+const missingPlugins = entries.filter((e) => !existsSync(join(nodeModules, e.name, 'package.json')))
 if (missingPlugins.length > 0) {
   console.error('✗ 插件未就位：', missingPlugins.map((p) => p.name).join(', '))
   process.exit(1)
 }
-for (const { name } of PLUGINS) {
-  const v = JSON.parse(readFileSync(join(nodeModules, name, 'package.json'), 'utf8')).version
-  console.log(`✓ ${name}@${v}`)
+for (const { name, version } of entries) {
+  const installed = JSON.parse(readFileSync(join(nodeModules, name, 'package.json'), 'utf8')).version
+  const flag = installed === version ? '✓' : '✗ 版本不符'
+  console.log(`${flag} ${name}@${installed}（仓库 ${version}）`)
+  if (installed !== version) process.exitCode = 1
 }
 console.log('完成。重启 DSH Desktop 后生效。')
