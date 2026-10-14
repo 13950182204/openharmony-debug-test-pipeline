@@ -3,6 +3,22 @@ node_modules/
 lib/
 dist/
 
+# 例外：**两个分发入口**的构建产物入库（当前 profile 只装这两个）。
+# 理由：`main` 指向 `lib/index.js`，而 pnpm 从 git 安装时三重不可行——
+#   ① 仓库里没有 lib（gitignore）→ 装完 main 指向不存在的文件、插件静默失效；
+#   ② 加 `prepare` 会被 pnpm 拦下（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），
+#      放行后它又去跑 `npm install` 装构建依赖，而安装环境里通常没有 npm
+#      （`ERR_PNPM_PREPARE_PACKAGE: npm-install`）；
+#   ③ allowBuilds 的键带 commit 哈希，每次提交都要改。
+# 提交产物后可让 GitHub URL 安装直接可用（实测唯一可行路径）。
+# 改 src 后必须重建并连同产物一起提交，否则仓库里是旧代码：
+#   主包 `pnpm run build`；子包 `pnpm --dir packages/gitlab-credentials run build`。
+# 注意：`packages/openharmony-issue-pipeline` 与 `packages/*/lib` 之外的产物仍忽略。
+packages/gitlab-credentials/lib/
+!packages/gitlab-credentials/lib/**
+!lib/
+!lib/**
+
 # 运行期状态（不入库）
 *.log
 pipeline-state.json

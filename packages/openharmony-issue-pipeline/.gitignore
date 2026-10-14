@@ -1,0 +1,3 @@
+# 本子包不是当前 profile 的安装入口（只装主包与 packages/gitlab-credentials），
+# 因此其构建产物不入库；根 .gitignore 只为那两个分发入口开了例外。
+lib/

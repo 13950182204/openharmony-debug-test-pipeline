@@ -2,6 +2,54 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.13] - 2026-10-14
+
+修复「用 GitHub 仓库地址安装插件」不可用的问题（实测发现两个独立原因）。
+
+### 诊断
+
+用 GUI 的「添加插件」填 `https://github.com/13950182204/openharmony-debug-test-pipeline`
+安装后，profile 里出现 `openharmony-debug-test-pipeline = github:13950182204/...`，但：
+
+1. **主包装了不工作**：安装目录里**没有 `lib/`**，而 `main` 指向 `lib/index.js`。
+   原因是 `lib/` 是 `tsc` 产物且被 `.gitignore` 忽略，**git 安装不会构建**——
+   拿到的是一份「入口指向不存在文件」的包，加载不出任何代码，且失败是静默的。
+2. **子包不会跟着装**：`packages/gitlab-credentials` 在 pnpm workspace 里，根
+   `package.json` **没有把它声明为依赖**，所以任何包管理器都不会顺带安装它；
+   且它**未发布到 npm**（`npm view` 404），因此只能单独用 tarball 或 git 子目录安装。
+
+### 为什么不能靠 `prepare` 解决（实测三重不可行）
+
+在临时 git 仓库上原样复现：
+
+- 仓库里 `.gitignore` 掉 `lib/` + `prepare: node build.mjs` → 安装被 pnpm 拦下：
+  `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`（git 宿主的包必须显式进 `allowBuilds`）；
+- 按提示把该包写进 `allowBuilds` 后仍失败：pnpm 接着跑 **`npm install`** 去装构建依赖，
+  而安装环境里通常没有 npm → `ERR_PNPM_PREPARE_PACKAGE: npm-install`；
+- 且 `allowBuilds` 的键**带 commit 哈希**，每次提交都要改。
+
+### 修复
+
+- **把两个分发入口的构建产物入库**：`lib/`（主包，18 文件 ~100K）与
+  `packages/gitlab-credentials/lib/`（子包，4 文件 ~56K），并在 `.gitignore` 里只为
+  这两个路径开例外（`packages/openharmony-issue-pipeline` 用包级 `.gitignore` 继续排除）。
+  这样 GitHub URL 安装拿到的包**直接可用**，无需构建、无需 allowBuilds。
+- 代价与约束（已写进 `.gitignore` 注释）：改 `src` 后必须重建并连同产物一起提交，
+  否则仓库里是旧代码；主包 `pnpm run build`，子包
+  `pnpm --dir packages/gitlab-credentials run build`。
+
+### 验证
+
+- 入口齐备：`lib/index.js`、`lib/types/index.d.ts`、子包 `lib/index.js` + `lib/client.js`；
+  重建后 `git status lib/` 无 diff（产物与 src 同步）。
+- vitest 40、python 15+15 全过。
+
+### 补充安装指引
+
+`openharmony-debug-test-pipeline` 与 `@superjunier/dsh-gitlab-credentials` 必须**各装一次**：
+子包不会被主包带装。推荐用 `scripts/desktop-reinstall.mjs`（tarball 方式，含 PATH 与副本自检），
+或用 GUI 分别填两个 tarball 路径。
+
 ## [1.1.12] - 2026-10-14
 
 **定位并本地修复** `Unknown agent preset: wsl-standard` 的根因（DSH Desktop 上 WSL 变体预设
