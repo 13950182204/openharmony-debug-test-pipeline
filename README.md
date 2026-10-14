@@ -178,6 +178,12 @@ pnpm test:python    # vendored skill 自带的 python 单测（ci_orchestrator /
    runtime 的 asar 副本同版本）。安装后脚本强制做副本矩阵自检，出现嵌套副本即失败退出
    （参见知识库《DSH-rc1工具调度器与Web profile重复模块故障》：同版本号 ≠ 同模块实例）。
 3. **校正 `dsh.profile.bundles`**：依赖装了但没进 bundles 就不会加载；脚本会补齐并打印清单。
+4. **同时装上 `dsh-wsl-workspace` 需要的宿主 SDK 包**（`@deepseek-ai/dsh-fs` /
+   `dsh-fs-local` / `dsh-shell` / `dsh-tool-fs-search`，与 runtime 的 asar 同版本）。
+   Desktop 把宿主打在 `app.asar` 里，Node 向上找裸包名走不进归档，于是这些 import 全部失败、
+   WSL 变体预设生成不出来——界面症状是 `Unknown agent preset: wsl-standard`
+   （与知识库《DSH-rc1工具调度器与Web profile重复模块故障》同属"模块解析锚点"问题）。
+   装完后脚本会用 `createRequire(插件入口)` 逐个 resolve 校验，失败即报 `RESOLVE_FAIL`。
 
 安装完成后**重启 DSH Desktop** 生效。
 

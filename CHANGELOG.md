@@ -2,6 +2,59 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.1.12] - 2026-10-14
+
+**定位并本地修复** `Unknown agent preset: wsl-standard` 的根因（DSH Desktop 上 WSL 变体预设
+生成失败），并把该修复固化进重装助手。
+
+### 诊断
+
+- 该错误与 persona 冲突属同一族，均由 `dsh-wsl-workspace` 的**变体生成**失败引发；两条错误文案
+  分别来自 `dsh-agent-preset-registry`（`Unknown agent preset`）与
+  `dsh-system-prompt`/`dsh-subagent`（`deployment:persona-prefix`），与本仓库两个插件无关
+  （两者产物中 `persona`/`agentPresets`/`wsl-standard` 零匹配）。
+- **根因（实测）**：`dsh-wsl-workspace` 启动期直接 import 的宿主 SDK 包
+  `@deepseek-ai/{dsh-fs,dsh-fs-local,dsh-shell,dsh-tool-fs-search}` 在 desktop profile 下
+  **无法解析**（`Cannot find module`）——DSH Desktop 把宿主打在 `app.asar` 里，Node 沿文件系统
+  向上找裸包名走不进归档。插件 CHANGELOG 中"Desktop 把宿主打在归档包里…这条路永远走不到宿主
+  里面"即指此；失败被 `catch` 吞掉，界面上只表现为 `Unknown agent preset: wsl-standard`。
+
+### 修复
+
+- 将上述 4 个包以**与 runtime asar 相同的版本（0.2.0-rc.2）**装进 desktop profile：不引入第二个
+  版本，仅把归档里的那一份在 profile 侧变得可解析。修复后插件所需的 9 个依赖（含
+  `@deepseek-ai/schemastery` 与 `js-yaml`）全部可解析。
+- `scripts/desktop-reinstall.mjs`：新增 `HOST_SDK` 段随插件一起安装，并新增**依赖可解析性自检**
+  （用 `createRequire(插件入口)` 逐个 resolve，失败即报 `RESOLVE_FAIL`）；同时修掉干跑仍会写
+  `package.json.bak-desktop-reinstall` 的缺陷（dry-run 现在零写盘）。
+
+### 验证
+
+- 副本矩阵自检：`@deepseek-ai` **26 个包、0 个嵌套副本**，除 `cordis@4.0.4`/`cosmokit@1.8.5`/
+  `schemastery@3.18.4` 外**全部 0.2.0-rc.2**（与 runtime 的 asar 副本同版本）。
+- 插件侧：`mr_review_six`、`gitlab_cred_status` 工具与 6 个 OpenHarmony skill 已在重启后的桌面
+  会话中注册（新注册代际生效）。
+- 生效边界：WSL 变体预设由插件在启动期生成，**需重启 DSH Desktop 后确认**模式选择器里是否出现
+  `WSL · …` 条目。
+
+## [1.1.11] - 2026-10-13
+
+新增 Windows 侧重装助手（`scripts/desktop-reinstall.mjs`），并补齐本版本条目（发版时漏记）。
+
+### 新增 / 增强
+
+- **`scripts/desktop-reinstall.mjs`**：在 Windows 上一键把插件与宿主 SDK 依赖装回 desktop profile，
+  内置三项手工易错点的防护——显式补 PATH（**只补 node 的 bin 目录**，绝不加 Node 根目录，否则
+  `bash.exe`/`wsl.exe` 会顶掉 WSL 的 bash 而打断会话）、安装后强制副本矩阵自检（每个核心包
+  只允许一个版本、禁止嵌套副本）、校验 `dsh.profile.bundles` 含两个插件。
+- README 增加「Windows 侧重装」段落，含上述 PATH 陷阱说明。
+
+### 背景
+
+DSH Desktop 自带 pnpm 派生子进程时**不会把 node 放进子环境 PATH**，两包 `postinstall` 里的
+`node …` 一律报 `'node' 不是内部或外部命令`（实测）；这是环境前提，脚本自身无法自愈，
+故由宿主侧助手显式提供。
+
 ## [1.1.10] - 2026-10-13
 
 重装两个插件（desktop profile）时暴露的两个真异常——都属于「先修复再安装」的范畴。

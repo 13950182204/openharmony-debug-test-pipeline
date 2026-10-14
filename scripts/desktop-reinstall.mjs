@@ -34,6 +34,25 @@ const PLUGINS = [
   { name: '@superjunier/dsh-gitlab-credentials', tgz: 'superjunier-dsh-gitlab-credentials-0.1.1.tgz' },
 ]
 
+/**
+ * `dsh-wsl-workspace` 在启动期直接 import 的宿主 SDK 包。
+ *
+ * DSH Desktop 把宿主打在 `app.asar` 里，而插件装在 profile 下——Node 沿文件系统往上
+ * 找裸包名**永远走不进归档**，于是这些 import 全部失败、WSL 变体预设生成不出来
+ * （症状：`Unknown agent preset: wsl-standard`；见该插件 CHANGELOG 与
+ * 《DSH-rc1工具调度器与Web profile重复模块故障》同类的"模块解析锚点"问题）。
+ *
+ * 修法是把它们以**与 runtime asar 相同的版本**装进 profile：不引入第二个版本，
+ * 只是把归档里的那一份在 profile 侧变得可解析。
+ */
+const HOST_SDK = [
+  '@deepseek-ai/dsh-fs',
+  '@deepseek-ai/dsh-fs-local',
+  '@deepseek-ai/dsh-shell',
+  '@deepseek-ai/dsh-tool-fs-search',
+]
+const HOST_SDK_VERSION = '0.2.0-rc.2'
+
 /** 解析 DSH Desktop 自带的 runtime 目录（含 node 与 pnpm）。 */
 function resolveRuntime() {
   const candidates = [
@@ -100,7 +119,7 @@ if (missing.length > 0) {
 const manifestPath = join(profileDir, 'package.json')
 const backupPath = `${manifestPath}.bak-desktop-reinstall`
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-copyFileSync(manifestPath, backupPath)
+if (!dryRun) copyFileSync(manifestPath, backupPath)
 manifest.dependencies ??= {}
 for (const { name, tgz } of PLUGINS) {
   manifest.dependencies[name] = `file:${join(storeDir, tgz).replace(/\\/g, '/')}`
@@ -109,8 +128,12 @@ manifest.dsh ??= {}
 manifest.dsh.profile ??= {}
 const bundles = (manifest.dsh.profile.bundles ??= [])
 for (const { name } of PLUGINS) if (!bundles.includes(name)) bundles.push(name)
-if (!dryRun) writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-console.log(`清单已更新（备份：${backupPath}），bundles=${bundles.length}`)
+if (dryRun) {
+  console.log(`[dry-run] 清单将登记 ${PLUGINS.length} 个插件 + ${HOST_SDK.length} 个宿主 SDK 包，bundles=${bundles.length}`)
+} else {
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+  console.log(`清单已更新（备份：${backupPath}），bundles=${bundles.length}`)
+}
 
 // 2) 安装：PATH 里只加 node 目录（见文件头注释的 bash.exe 陷阱）
 const env = { ...process.env, PATH: `${runtime.nodeBin};${process.env.PATH ?? ''}` }
@@ -118,12 +141,35 @@ if (dryRun) {
   console.log('[dry-run] 跳过安装')
   process.exit(0)
 }
-const result = spawnSync(runtime.node, [runtime.pnpm, 'install', '--config.auto-install-peers=true'], {
-  cwd: profileDir,
-  stdio: 'inherit',
-  env,
-})
+const result = spawnSync(
+  runtime.node,
+  [
+    runtime.pnpm,
+    'add',
+    '--config.auto-install-peers=true',
+    ...HOST_SDK.map((name) => `${name}@${HOST_SDK_VERSION}`),
+  ],
+  { cwd: profileDir, stdio: 'inherit', env },
+)
 console.log('install exit =', result.status)
+
+// 2b) 校验宿主 SDK 包确实可解析（这是 WSL 变体预设能生成的前提）
+const pluginEntry = join(nodeModules, 'dsh-wsl-workspace', 'lib', 'index.js')
+if (existsSync(pluginEntry)) {
+  const probeScript = join(profileDir, '.resolve-probe.mjs')
+  const pkgs = [...HOST_SDK, '@deepseek-ai/schemastery', 'js-yaml']
+  writeFileSync(
+    probeScript,
+    `import { createRequire } from 'node:module'\n`
+    + `const req = createRequire(${JSON.stringify(pluginEntry)})\n`
+    + `const bad = []\n`
+    + `for (const p of ${JSON.stringify(pkgs)}) { try { req.resolve(p + '/package.json') } catch { bad.push(p) } }\n`
+    + `console.log(bad.length === 0 ? 'RESOLVE_OK' : 'RESOLVE_FAIL ' + bad.join(','))\n`,
+    'utf8',
+  )
+  const probe = spawnSync(runtime.node, [probeScript], { encoding: 'utf8' })
+  console.log('依赖可解析性:', (probe.stdout ?? '').trim() || '(无输出)')
+}
 
 // 3) 自检
 const audit = auditCoreCopies(nodeModules)
