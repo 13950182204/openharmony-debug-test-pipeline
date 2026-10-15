@@ -2,6 +2,36 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.2] - 2026-10-15
+
+端到端流程审计后的 6 项加固（全部带单测），并新增 [docs/操作手册.md](docs/操作手册.md)。
+审计依据：12 个真实 run、29 次归档失败尝试、artifact 占用 8.43 GB 的实测数据。
+
+### 修复
+
+- **artifact 只增不删（已占 8.43 GB）**：新增 `prune_artifacts()`，按"最新 N 个 + 超过 N 天"回收
+  OTA 包（`--prune-days` / `--keep-artifacts`），**进行中的 run 绝不触碰**；run 的 JSON 审计保留。
+  实测一次回收释放 2.26 GB。
+- **`blocked` 是死状态**：新增 `ci_orchestrator.py rearm --run-id`，把因环境问题终结的 run 拉回
+  可推进状态（清 `stale_source` / `adopt_error` / 门禁查找错误），并写 `rearmed` 审计事件。
+- **`stale_source` 永久污染 run**：判据从"MR 当前 head"改为"**流水线实际构建的提交**"
+  （`pipeline.sha`），平台对登记提交重跑后自动解除并记 `stale_source_cleared`。
+  实测旧逻辑会让"MR 改一版"永久卡死该 run。
+- **离线设备消耗重试预算**：新增 `DeviceOfflineError` 与 `offline` 尝试状态；离线设备**不写入
+  `attempts`**（不再污染 `no_device_write`/`retry_reason`）。池内全离线时落
+  `phase3.status=waiting_for_device`（非失败），按 300s 冷却自动重试且**不消耗** `unit_restarts`。
+  直接起因：真实 run 因池内 3 台离线用掉 4/5 次重试预算。
+- **MR 证据评论缺关键信息**：`mr_note_body` 现输出身份差异（`identity_notes`）、
+  "已在本构建上未重复刷机"（`skipped_write`）、升级后设备版本/commitid/boot 状态、离线设备清单。
+- **手工 drop-in 不可复现**：`install_systemd_units.py` 现生成
+  `openharmony-ci-phase3@.service.d/retry-preflight.conf`（`CI_PHASE3_RETRY_PREFLIGHT=1`），
+  换机重装不再丢失 phase-3 的合法重试开关。
+
+### 新增文档
+
+- [docs/操作手册.md](docs/操作手册.md)：八阶段流程、平台 CI 契约、状态机与字段表、日常/恢复/
+  巡检操作、异常速查表、双宿主环境规则、身份口径、能力边界与自检清单。
+
 ## [1.2.1] - 2026-10-15
 
 真机 OTA 演练（MR 226 / A333 门禁构建 #31）暴露并修掉的问题。**两台 A333 现均运行

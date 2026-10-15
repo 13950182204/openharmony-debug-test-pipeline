@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,8 @@ PROFILES_DIR = SKILL_DIR / "profiles"
 
 PHASE3_UNIT_TEMPLATE = "openharmony-ci-phase3@{}"
 PHASE3_UNIT_MAX_RESTARTS = 3
+# "等设备上线"的重试冷却：设备池常常零在线，不能每 5 分钟都在日志里刷一次。
+DEFAULT_DEVICE_WAIT_COOLDOWN = 300
 
 
 class OrchestratorError(RuntimeError):
@@ -230,20 +233,52 @@ def profile_artifact_pattern(profile: dict[str, Any]) -> str:
 # 平台观察（GitLab，只读）
 # --------------------------------------------------------------------------- #
 
-def stamp_platform(state: dict[str, Any], mr: dict[str, Any], run_state: str) -> None:
+def stamp_platform(state: dict[str, Any], mr: dict[str, Any], run_state: str,
+                   stale: bool | None = None) -> None:
+    """Refresh the platform snapshot; `stale` decides whether the run may proceed.
+
+    `stale=None` 表示调用方无法判定（例如只更新了流水线状态），保持既有标记不动。
+    """
     platform_state = platform.observed_platform(mr, run_state)
     recorded_sha = state.get("trigger", {}).get("source_sha")
-    mr_sha = platform_state.get("mr_sha")
-    if recorded_sha and mr_sha and str(recorded_sha) != str(mr_sha):
-        # MR 在门禁运行中被更新：旧流水线的结论对不上当前提交，必须重跑平台流水线。
+    if stale is None:
+        stale = bool((state.get("trigger", {}).get("platform") or {}).get("stale_source"))
+    if stale and recorded_sha:
+        # 门禁构建对应的提交**不是**本 run 登记的提交：结论不可用，必须等平台对登记提交重跑。
         platform_state["stale_source"] = {
             "recorded_source_sha": recorded_sha,
-            "current_mr_sha": mr_sha,
+            "pipeline_sha": platform_state.get("pipeline_sha"),
+            "current_mr_sha": platform_state.get("mr_sha"),
         }
-    state.setdefault("trigger", {})["platform"] = {
-        **(state["trigger"].get("platform") or {}), **platform_state,
-        "observed_at": utc_now(),
-    }
+    merged = {**(state["trigger"].get("platform") or {}), **platform_state,
+              "observed_at": utc_now()}
+    if not stale:
+        # 合并会保留旧键，必须显式删除，否则"平台已重跑登记提交"也解不开 stale（实测死锁）。
+        merged.pop("stale_source", None)
+    state.setdefault("trigger", {})["platform"] = merged
+
+
+def run_is_stale(state: dict[str, Any], mr: dict[str, Any],
+                 pipeline_record: dict[str, Any] | None) -> bool:
+    """Is the recorded commit different from the commit the platform actually built?
+
+    判据只看**流水线实际构建的提交**（`pipeline.sha`），而不是 MR 当前 head：
+    - pipeline.sha == 登记 SHA → 结论可用（MR 再前进也不影响已完成构建的结论）；
+    - pipeline.sha != 登记 SHA → 该流水线验证的是别的提交，本次 run 不能用；
+    - 流水线尚未创建（刚提交/被跳过）→ 用 MR head 兜底判断，
+      此时若 MR 已经前进，说明该 run 登记的提交已被取代。
+
+    这样"平台对登记提交重跑了流水线"能自动解除此前的 stale 标记（旧实现按 MR head 判断，
+    一旦 MR 前进就永久卡住）。
+    """
+    recorded = str(state.get("trigger", {}).get("source_sha") or "")
+    if not recorded:
+        return False
+    if pipeline_record is not None:
+        pipeline_sha = str(pipeline_record.get("sha") or "")
+        return bool(pipeline_sha) and pipeline_sha != recorded
+    mr_sha = str(mr.get("sha") or "")
+    return bool(mr_sha) and mr_sha != recorded
 
 
 def refresh_gate_state(state: dict[str, Any], *, host: str | None = None,
@@ -260,15 +295,21 @@ def refresh_gate_state(state: dict[str, Any], *, host: str | None = None,
     if pipeline_record is None:
         # 平台尚未为该 MR 创建流水线（刚提交/流水线被跳过）：保持 pending，不当作失败。
         state["status"] = "gate_pending"
-        stamp_platform(state, mr, "gate_pending")
+        stamp_platform(state, mr, "gate_pending", stale=run_is_stale(state, mr, None))
         state["trigger"]["platform"].update({"pipeline_id": None, "target_branch": target_branch})
         add_event(state, "gate_pending",
                   "GitLab has not created a pipeline for this merge request yet")
         return state["status"]
+    stale = run_is_stale(state, mr, pipeline_record)
+    previous_stale = bool((trigger.get("platform") or {}).get("stale_source"))
     run_state = platform.run_state_for(pipeline_record, target_branch=target_branch)
     state["status"] = run_state
-    stamp_platform(state, mr, run_state)
+    stamp_platform(state, mr, run_state, stale=stale)
     state["trigger"]["platform"]["target_branch"] = target_branch
+    if previous_stale and not stale:
+        add_event(state, "stale_source_cleared",
+                  f"Pipeline {pipeline_record.get('id')} now builds the registered "
+                  f"source SHA {trigger.get('source_sha')}; resuming")
     add_event(state, run_state,
               f"GitLab pipeline {pipeline_record.get('id')} is "
               f"{pipeline_record.get('status')!r} -> {run_state}")
@@ -663,7 +704,34 @@ def reconcile_phase3(root: Path, state: dict[str, Any]) -> str | None:
         return "phase3_unit_unknown"
     if unit_state == "start_failed":
         return "phase3_unit_start_failed"
-    phase3_status = state.get("phase3", {}).get("status")
+    phase3 = state.get("phase3", {})
+    phase3_status = phase3.get("status")
+    if phase3_status == "waiting_for_device" and status == "build_succeeded":
+        # 设备离线：这不是失败，也不该消耗 unit_restarts（否则整机拔线几次就把 run 逼死）。
+        # 按冷却窗口重试，等设备回来即可继续。
+        cooldown = int(phase3.get("device_wait_cooldown_seconds", DEFAULT_DEVICE_WAIT_COOLDOWN))
+        last = str(phase3.get("device_wait_at") or "")
+        waited = 0.0
+        try:
+            if last:
+                waited = (datetime.now(timezone.utc)
+                          - datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            waited = cooldown
+        if waited < cooldown:
+            return "waiting_for_device"
+        phase3["device_wait_at"] = utc_now()
+        phase3["device_wait_attempts"] = int(phase3.get("device_wait_attempts", 0)) + 1
+        add_event(state, "device_wait_retry",
+                  f"No pool device was online; retrying phase 3 "
+                  f"(attempt {phase3['device_wait_attempts']})")
+        try:
+            start_phase3_unit(root, state)
+        except (OSError, OrchestratorError) as error:
+            add_event(state, "phase3_unit_start_failed", str(error))
+            return "phase3_unit_start_failed"
+        return "phase3_unit_started"
+
     if phase3_status not in (None, "", "not_started", "running"):
         # 单元已结束且 run 状态已收敛（runner 的终态是 passed / fail / inconclusive /
         # dry_run / failed），交给 phase-3 自身的 claim/重试策略处理，不再自动重启。
@@ -761,6 +829,35 @@ def reconcile_one(root: Path, state: dict[str, Any], opener: Any, headers: dict[
     return {"run_id": run_id, "status": state.get("status"), "action": "noop"}
 
 
+def rearm_run(root: Path, run_id: str) -> dict[str, Any]:
+    """把因环境问题终结的 run 重新拉回可推进状态（blocked / gate_* 失败等）。
+
+    为什么需要显式入口：`reconcile` 跳过终结 run，而"凭据配好、网络恢复、门禁重新跑过"
+    这些修复都发生在 run 之外（实测：一次真实 OTA 因路径缺陷 blocked 后，只能靠人工 restart
+    systemd 单元）。rearm 只解冻状态，不做任何设备动作；随后由 reconcile 正常推进。
+    """
+    with state_lock(root):
+        path = run_path(root, run_id)
+        state = load_json(path)
+        before = state.get("status")
+        trigger = state.setdefault("trigger", {})
+        platform_state = trigger.setdefault("platform", {})
+        had_stale = "stale_source" in platform_state
+        platform_state.pop("stale_source", None)
+        state.setdefault("build", {}).pop("adopt_error", None)
+        state.setdefault("build", {}).pop("legacy_self_trigger", None)
+        platform_state.pop("gate_build_lookup_error", None)
+        # 平台已成功的 run 回到 gate_succeeded（重新认领），否则回到 gate_pending（重新观察）
+        state["status"] = ("gate_succeeded" if platform_state.get("pipeline_status") == "success"
+                           else "gate_pending")
+        state.setdefault("phase3", {}).pop("device_wait_at", None)
+        add_event(state, "rearmed",
+                  f"Re-armed from {before!r} to {state['status']!r}"
+                  + (" (cleared stale_source marker)" if had_stale else ""))
+        write_json(path, state)
+        return {"run_id": run_id, "from": before, "to": state["status"]}
+
+
 def selected_paths(root: Path, run_id: str | None) -> list[Path]:
     if run_id:
         return [run_path(root, run_id)]
@@ -831,8 +928,63 @@ def prune_terminal_runs(root: Path, days: int, now: datetime | None = None) -> l
     return moved
 
 
+def prune_artifacts(root: Path, days: int, keep: int = 3, now: datetime | None = None) -> dict[str, Any]:
+    """Reclaim OTA packages of finished runs (每个包约 750–800 MB，只增不删会吃满磁盘).
+
+    保留策略（不碰未终结 run 的包，避免删掉正在投递的文件）：
+    - 最近 `keep` 个 run 的包无条件保留；
+    - 其余 run 的包在 `updated_at` 超过 `days` 天后删除；
+    - 不删 run 的 JSON（审计仍在 runs/ 或 archive/）。
+    """
+    artifacts_root = root / "artifacts"
+    if not artifacts_root.is_dir():
+        return {"removed": [], "freed_bytes": 0, "kept": 0}
+    entries: list[tuple[Path, datetime, str]] = []
+    for path in sorted(artifacts_root.iterdir()):
+        if not path.is_dir():
+            continue
+        state_path = root / "runs" / f"{path.name}.json"
+        archived = root / "runs" / "archive" / f"{path.name}.json"
+        stamp, active = None, False
+        for candidate in (state_path, archived):
+            if candidate.is_file():
+                try:
+                    state = load_json(candidate)
+                except OrchestratorError:
+                    continue
+                active = active or state.get("status") not in TERMINAL_RUN_STATUSES
+                text = str(state.get("updated_at") or state.get("created_at") or "")
+                try:
+                    stamp = datetime.fromisoformat(text)
+                except ValueError:
+                    stamp = None
+                break
+        if active:
+            continue  # 进行中的 run：绝不碰它的包
+        entries.append((path, stamp or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc),
+                        path.name))
+    entries.sort(key=lambda item: item[1], reverse=True)
+    keep_names = {name for _, _, name in entries[:max(0, keep)]}
+    # 上限保护：timedelta 不接受任意大天数（干跑时会传超大值来看"会删什么"）。
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=min(max(0, days), 36500))
+    removed: list[str] = []
+    freed = 0
+    for path, stamp, name in entries:
+        if name in keep_names or days <= 0 or stamp > cutoff:
+            continue
+        try:
+            size = sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+            shutil.rmtree(path)
+        except OSError:
+            continue
+        removed.append(name)
+        freed += size
+    return {"removed": removed, "freed_bytes": freed, "kept": min(len(entries), max(0, keep))}
+
+
 def reconcile_runs(root: Path, timeout: int, run_id: str | None = None,
-                   skip_terminal: bool = True, prune_days: int = 0) -> dict[str, Any]:
+                   skip_terminal: bool = True, prune_days: int = 0,
+                   keep_artifacts: int = 3) -> dict[str, Any]:
     headers = jenkins_headers()
     opener = build_http_opener()
     outcomes = []
@@ -850,7 +1002,10 @@ def reconcile_runs(root: Path, timeout: int, run_id: str | None = None,
             except (JenkinsError, platform.GitLabError, OrchestratorError, OSError) as error:
                 errors.append({"path": str(path), "error": str(error)})
         pruned = prune_terminal_runs(root, prune_days) if prune_days else []
-    return {"phase": 2, "runs": outcomes, "errors": errors, "retired": retired, "pruned": pruned}
+        artifacts = (prune_artifacts(root, prune_days, keep_artifacts) if prune_days
+                     else {"removed": [], "freed_bytes": 0, "kept": 0})
+    return {"phase": 2, "runs": outcomes, "errors": errors, "retired": retired,
+            "pruned": pruned, "artifacts": artifacts}
 
 
 # --------------------------------------------------------------------------- #
@@ -994,6 +1149,11 @@ def parse_args() -> argparse.Namespace:
     note.add_argument("--kind", default="note")
     note.add_argument("text", help="Event detail")
 
+    rearm = subparsers.add_parser(
+        "rearm", help="Re-arm a blocked/finished run so reconcile can retry it")
+    rearm.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
+    rearm.add_argument("--run-id", required=True)
+
     reconcile = subparsers.add_parser("reconcile", help="Poll GitLab and claim the gate build")
     reconcile.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
     reconcile.add_argument("--run-id")
@@ -1001,7 +1161,9 @@ def parse_args() -> argparse.Namespace:
     reconcile.add_argument("--include-terminal", action="store_true",
                            help="Also process runs that already ended (default: skip them)")
     reconcile.add_argument("--prune-days", type=int, default=0,
-                           help="Archive terminal runs older than N days (0 disables)")
+                           help="Archive terminal runs and reclaim their OTA packages after N days (0 disables)")
+    reconcile.add_argument("--keep-artifacts", type=int, default=3,
+                           help="Always keep the OTA packages of the newest N finished runs (default 3)")
 
     serve = subparsers.add_parser("serve", help="Optional legacy Jenkins completion webhook")
     serve.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
@@ -1031,6 +1193,10 @@ def main() -> int:
             "state": str(run_path(root, state["run_id"])),
         }, ensure_ascii=False, sort_keys=True))
         return 0
+    if args.command == "rearm":
+        print(json.dumps({"phase": 2, "action": "rearm", **rearm_run(root, args.run_id)},
+                         ensure_ascii=False, sort_keys=True))
+        return 0
     if args.command == "note":
         with state_lock(root):
             path = run_path(root, args.run_id)
@@ -1041,12 +1207,13 @@ def main() -> int:
                          ensure_ascii=False, sort_keys=True))
         return 0
     if args.command == "reconcile":
-        if args.timeout_seconds <= 0 or args.prune_days < 0:
-            raise OrchestratorError("timeout-seconds must be positive and prune-days non-negative")
+        if args.timeout_seconds <= 0 or args.prune_days < 0 or args.keep_artifacts < 0:
+            raise OrchestratorError(
+                "timeout-seconds must be positive; prune-days and keep-artifacts non-negative")
         print(json.dumps(
             reconcile_runs(root, args.timeout_seconds, args.run_id,
                            skip_terminal=not args.include_terminal,
-                           prune_days=args.prune_days),
+                           prune_days=args.prune_days, keep_artifacts=args.keep_artifacts),
             ensure_ascii=False, sort_keys=True))
         return 0
     if args.timeout_seconds <= 0 or not 1 <= args.port <= 65535:

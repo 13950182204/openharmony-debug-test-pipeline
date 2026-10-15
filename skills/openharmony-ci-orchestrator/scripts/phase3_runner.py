@@ -40,6 +40,15 @@ class Phase3Error(RuntimeError):
     """A terminal safety, package, device, or regression failure."""
 
 
+class DeviceOfflineError(Phase3Error):
+    """目标设备当前不在 hdc 列表里。
+
+    与"真失败"分开统计：设备池里常有多台离线，若把"不在线"也算作失败尝试，会迅速耗尽
+    `preflight_retries`（实测一次真实 run 因此用掉 4/5 次预算）。离线只表示"本轮没有可用设备"，
+    不消耗重试预算，等下一个 tick 再看。
+    """
+
+
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -169,7 +178,7 @@ def listed_targets() -> set[str]:
 
 def require_target(serial: str) -> None:
     if serial not in listed_targets():
-        raise Phase3Error(f"Configured target is not online in hdc list targets: {serial}")
+        raise DeviceOfflineError(f"Configured target is not online in hdc list targets: {serial}")
 
 
 def shell(serial: str, command: str, timeout: int = 60, check: bool = True) -> str:
@@ -644,6 +653,10 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
             f"{device['role']} did not return to completed target boot before timeout "
             f"({last_blocker})"
         )
+    except DeviceOfflineError as error:
+        # 设备不在线：不计入失败尝试（见 DeviceOfflineError 的说明）。
+        attempt.update({"status": "offline", "finished_at": utc_now(), "error": str(error)})
+        return attempt
     except (OSError, subprocess.SubprocessError, Phase3Error) as error:
         attempt.update({"status": "failed", "finished_at": utc_now(), "error": str(error)})
         if serial in listed_targets():
@@ -867,11 +880,25 @@ def mr_note_body(state: dict[str, Any]) -> str:
         lines.append(f"- OTA: `{package.get('artifact')}`, SHA-256 `{package.get('sha256')}`")
     for attempt in phase3.get("attempts", []):
         lines.append(f"- {attempt.get('role')} `{attempt.get('serial')}`: `{attempt.get('status')}`")
+        if attempt.get("skipped_write"):
+            # 已在本构建固件上：没有重复刷机，避免读者误以为又刷了一次。
+            lines.append(f"  - Not reflashed: {attempt['skipped_write']}")
+        for note in attempt.get("identity_notes") or []:
+            lines.append(f"  - Identity note (evidence only): `{note}`")
+        for note in attempt.get("identity_notes_after") or []:
+            lines.append(f"  - Identity changed after OTA: `{note}`")
+        if attempt.get("after"):
+            after = attempt["after"]
+            lines.append(f"  - Device after: `{str(after.get('software_version', '')).strip()}`"
+                         f" / commit `{str(after.get('firmware_commitid', ''))[:12]}`"
+                         f" / boot `{str(after.get('boot_completed', '')).strip()}`")
         evidence = str(attempt.get("updater_evidence", ""))
         if "Version Check Fail" in evidence:
             lines.append("  - Updater rejected the package at version-list precheck (`Version Check Fail`).")
         elif attempt.get("error"):
             lines.append(f"  - Failure: `{attempt.get('error')}`")
+    for serial in phase3.get("offline_devices") or []:
+        lines.append(f"- Offline at run time: `{serial}`")
     regression = phase3.get("regression")
     if isinstance(regression, dict):
         lines.append(f"- Regression: `{regression.get('status')}`")
@@ -967,17 +994,35 @@ def main() -> int:
             print(json.dumps({"phase": 3, "run_id": args.run_id, "status": "dry_run", "state": str(run_path(root, args.run_id))}, ensure_ascii=False))
             return 0
         attempts = []
+        offline: list[dict[str, Any]] = []
         successful_device = None
         for device in profile["devices"]:
             # verify_source_sha() 返回的是证据 dict（requested/verified/package_target_version），
             # 这里必须传真正的 SHA 字符串，否则 commitid 门禁恒不成立（实测会无限循环）。
             attempt = perform_ota(device, package, metadata, profile,
                                   source_sha.get("verified") or source_sha.get("requested"))
+            if attempt["status"] == "offline":
+                # 离线设备不写进 attempts（否则会污染重试判据：no_device_write 与 retry_reason
+                # 都会把"不在线"当失败）。单独收集，用于判断是否"本轮无可用设备"。
+                offline.append(attempt)
+                continue
             attempts.append(attempt)
             if attempt["status"] in ("passed", "already_on_target"):
                 # already_on_target：设备已在本构建固件上（幂等重跑），同样进入回归与证据链。
                 successful_device = device
                 break
+        if successful_device is None and offline and not attempts:
+            # 设备池里一台都不在线：是"等待设备"，不是失败；不消耗重试预算，等下个 tick 再看。
+            result = finish_run(root, args.run_id, {
+                "status": "waiting_for_device", "finished_at": utc_now(),
+                "error": "no pool device is online in hdc list targets",
+                "offline_devices": [item["serial"] for item in offline],
+                "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state,
+            })
+            print(json.dumps({"phase": 3, "run_id": args.run_id,
+                              "status": result["phase3"]["status"],
+                              "state": str(run_path(root, args.run_id))}, ensure_ascii=False))
+            return 0
         if successful_device is None:
             errors = "; ".join(str(attempt.get("error", "unknown OTA failure")) for attempt in attempts)
             result = finish_run(root, args.run_id, {"status": "failed", "finished_at": utc_now(), "error": errors, "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state, "attempts": attempts})

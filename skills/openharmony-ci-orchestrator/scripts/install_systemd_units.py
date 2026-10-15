@@ -119,9 +119,19 @@ def main() -> int:
         "[Timer]\nOnCalendar=" + args.reconcile_timer + "\nPersistent=true\nRandomizedDelaySec=1m\n"
         "Unit=openharmony-ci-reconcile.service\n\n[Install]\nWantedBy=timers.target\n"
     )
+    phase3_env = (
+        "# phase-3 在本机/设备层面的合法重试开关（与 phase3_unit_entry.py 对齐）。\n"
+        "# CI_PHASE3_RETRY_PREFLIGHT=1: allow retrying preflight/transfer failures that\n"
+        "# never wrote to a device (cap 5, enforced by the runner's claim gate).\n"
+        "[Service]\nEnvironment=CI_PHASE3_RETRY_PREFLIGHT=1\n"
+    )
     write_if_changed(unit_dir / "openharmony-ci-webhook.service", webhook)
     write_if_changed(unit_dir / "openharmony-ci-reconcile.service", reconcile)
     write_if_changed(unit_dir / "openharmony-ci-reconcile.timer", timer)
+    # 模板单元的 drop-in：仓库必须能重现手工装过的东西（否则换机重装就丢）。
+    phase3_dropin_dir = unit_dir / "openharmony-ci-phase3@.service.d"
+    phase3_dropin_dir.mkdir(parents=True, exist_ok=True)
+    write_if_changed(phase3_dropin_dir / "retry-preflight.conf", phase3_env)
     if args.enable:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "--user", "enable", "--now", "openharmony-ci-reconcile.timer"], check=True)

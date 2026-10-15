@@ -470,6 +470,17 @@ class Phase3RunnerTests(unittest.TestCase):
         on_target = {"software_version": "OpenHarmony 6.1.0.35"}
         self.assertFalse(runner.source_version_matches(metadata, on_target, "software_version"))
 
+    def test_offline_devices_do_not_consume_the_retry_budget(self) -> None:
+        """设备池常有多台离线：离线只表示"本轮无可用设备"，不写 attempts。"""
+        device = self.profile["devices"][0]
+        with mock.patch.object(runner, "require_target",
+                               side_effect=runner.DeviceOfflineError("not online")):
+            attempt = runner.perform_ota(device, Path("/tmp/p.zip"),
+                                         {"size": 1, "target_version": "x"},
+                                         self.profile, GATE_SHA)
+        self.assertEqual(attempt["status"], "offline")
+        self.assertNotIn("write_updater", attempt)
+
     def test_device_identity_is_evidence_not_a_gate(self) -> None:
         """用户口径：identity 不做硬限制，只要能升级且升级正确。"""
         device = self.profile["devices"][0]
@@ -876,6 +887,107 @@ class OrchestratorTests(unittest.TestCase):
         retired = orchestrator.load_json(legacy)
         self.assertEqual(retired["status"], "blocked")
         self.assertTrue(retired["build"]["legacy_self_trigger"])
+
+    # -- 审计修复项（2026-10-15）------------------------------------------ #
+    def test_prune_artifacts_keeps_recent_and_reclaims_old(self) -> None:
+        """包只增不删会吃满磁盘：按"最新 N 个 + 超过 N 天"回收。"""
+        artifacts = self.root / "artifacts"
+        old = artifacts / "ci-old"
+        recent = artifacts / "ci-recent"
+        for name, size in (("ci-old", 4096), ("ci-recent", 2048)):
+            (artifacts / name).mkdir(parents=True)
+            (artifacts / name / "update.zip").write_bytes(b"x" * size)
+        orchestrator.write_json(self.root / "runs" / "ci-old.json", {
+            "run_id": "ci-old", "status": "blocked",
+            "updated_at": "2026-01-01T00:00:00+00:00", "events": [],
+        })
+        orchestrator.write_json(self.root / "runs" / "ci-recent.json", {
+            "run_id": "ci-recent", "status": "blocked",
+            "updated_at": "2099-01-01T00:00:00+00:00", "events": [],
+        })
+        report = orchestrator.prune_artifacts(self.root, days=30, keep=1)
+        self.assertEqual(report["removed"], ["ci-old"])
+        self.assertGreater(report["freed_bytes"], 0)
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
+
+    def test_prune_artifacts_never_touches_an_active_run(self) -> None:
+        artifacts = self.root / "artifacts" / "ci-active"
+        artifacts.mkdir(parents=True)
+        (artifacts / "update.zip").write_bytes(b"x" * 16)
+        orchestrator.write_json(self.root / "runs" / "ci-active.json", {
+            "run_id": "ci-active", "status": "gate_pending",
+            "updated_at": "2026-01-01T00:00:00+00:00", "events": [],
+        })
+        report = orchestrator.prune_artifacts(self.root, days=1, keep=0)
+        self.assertEqual(report["removed"], [])
+        self.assertTrue(artifacts.is_dir())
+
+    def test_rearm_clears_stale_and_restores_a_retryable_state(self) -> None:
+        """blocked 是终焉状态：必须能显式重新武装，否则修好环境也永远不会再试。"""
+        path = self.root / "runs" / "ci-blocked.json"
+        orchestrator.write_json(path, {
+            "run_id": "ci-blocked", "status": "blocked",
+            "trigger": {"source_sha": GATE_SHA, "platform": {
+                "pipeline_status": "success", "stale_source": {"recorded_source_sha": GATE_SHA},
+                "gate_build_lookup_error": "rotated out"}},
+            "build": {"adopt_error": "no matching build"},
+            "phase3": {"status": "not_started", "device_wait_at": "2026-01-01T00:00:00+00:00"},
+            "events": [],
+        })
+        result = orchestrator.rearm_run(self.root, "ci-blocked")
+        self.assertEqual(result["from"], "blocked")
+        self.assertEqual(result["to"], "gate_succeeded")
+        state = orchestrator.load_json(path)
+        self.assertNotIn("stale_source", state["trigger"]["platform"])
+        self.assertNotIn("adopt_error", state["build"])
+        self.assertNotIn("gate_build_lookup_error", state["trigger"]["platform"])
+        self.assertIn("rearmed", [event["kind"] for event in state["events"]])
+
+    def test_stale_source_is_cleared_when_the_platform_rebuilds_the_registered_commit(self) -> None:
+        """MR 前进后平台对新提交重跑 → 流水线 SHA 回到登记值，应当自动解除 stale。"""
+        state = {"trigger": {"source_sha": GATE_SHA, "platform": {}}}
+        # 流水线验证的是别的提交 → stale
+        self.assertTrue(orchestrator.run_is_stale(
+            state, {"sha": "b" * 40}, {"sha": "c" * 40}))
+        # 平台对登记提交重跑 → 不再 stale
+        self.assertFalse(orchestrator.run_is_stale(
+            state, {"sha": "b" * 40}, {"sha": GATE_SHA}))
+        # 还没有流水线时按 MR head 兜底
+        self.assertTrue(orchestrator.run_is_stale(state, {"sha": "b" * 40}, None))
+        self.assertFalse(orchestrator.run_is_stale(state, {"sha": GATE_SHA}, None))
+
+    def test_stamp_platform_clears_a_resolved_stale_marker(self) -> None:
+        state = {"trigger": {"source_sha": GATE_SHA, "platform": {"stale_source": {"x": 1}}}}
+        orchestrator.stamp_platform(state, mr_payload(), "gate_succeeded", stale=False)
+        self.assertNotIn("stale_source", state["trigger"]["platform"])
+        orchestrator.stamp_platform(state, mr_payload(), "gate_succeeded", stale=True)
+        self.assertIn("stale_source", state["trigger"]["platform"])
+
+    def test_mr_note_reports_identity_notes_and_skipped_writes(self) -> None:
+        state = {
+            "run_id": "run-2",
+            "trigger": {"job": CHIP_JOB, "source_branch": "b", "source_sha": GATE_SHA,
+                        "platform": {"pipeline_id": PIPELINE_ID, "pipeline_status": "success"}},
+            "build": {"number": 31, "url": "http://jenkins/job/chip/31"},
+            "phase3": {
+                "status": "inconclusive", "profile": "a333-2g-primary-standby",
+                "offline_devices": ["ea010e325333324247102b4ed1988ce7"],
+                "attempts": [{
+                    "role": "standby", "serial": "150100424a5444345206517525298929",
+                    "status": "already_on_target",
+                    "skipped_write": "device already runs the registered source SHA",
+                    "identity_notes": ["product_name: expected 'DHong-A333-Development-Board', got 'OpenHarmony 3.2'"],
+                    "after": {"software_version": "OpenHarmony 6.1.0.35",
+                              "firmware_commitid": GATE_SHA, "boot_completed": "true"},
+                }],
+            },
+        }
+        body = runner.mr_note_body(state)
+        self.assertIn("Not reflashed", body)
+        self.assertIn("Identity note", body)
+        self.assertIn("Offline at run time", body)
+        self.assertIn(GATE_SHA[:12], body)
 
     def test_adopt_registers_and_claims_in_one_step(self) -> None:
         with mock.patch.object(orchestrator, "start_phase3_unit") as starter, \
