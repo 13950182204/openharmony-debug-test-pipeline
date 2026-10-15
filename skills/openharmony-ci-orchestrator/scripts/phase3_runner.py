@@ -8,6 +8,7 @@ import codecs
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from xml.etree import ElementTree
 from ci_orchestrator import (add_event, load_json, run_path, state_directory,
                              state_lock, write_json)
 from jenkins_api import (JenkinsError, build_http_opener, credentials, request_json)
+import test_harness
 from orchestrator_config import CONFIG_ENV
 from orchestrator_config import configured_value as _configured_value
 
@@ -711,7 +713,107 @@ def regression_ui_landscape_control_center(
                 "evidence": {"error": str(error), **evidence}}
 
 
-def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: dict[str, Any]) -> dict[str, Any]:
+def modules_to_rerun(regression: dict[str, Any], run_state: dict[str, Any] | None) -> list[str]:
+    """决定重跑哪些测试项：profile 显式清单优先，否则取分诊阶段登记的失败项。
+
+    用户口径（2026-10-15）：**只跑第一步测试报告里出错的整个测试项**（模块级）。
+    分诊阶段把失败模块写进流水线状态（`artifacts.failedModules`，或从
+    `artifacts.modules` 的键推导），这里按模块去重后作为 xdevice `-l` 的输入。
+    """
+    explicit = regression.get("modules")
+    if isinstance(explicit, list) and explicit:
+        return [str(item).strip() for item in explicit if str(item).strip()]
+    artifacts = ((run_state or {}).get("artifacts") or {})
+    names: list[str] = []
+    listed = artifacts.get("failedModules")
+    if isinstance(listed, list):
+        names.extend(str(item) for item in listed)
+    modules = artifacts.get("modules")
+    if isinstance(modules, dict):
+        names.extend(str(name) for name in modules)
+    resolved: list[str] = []
+    for name in names:
+        module = test_harness.module_name_from_case(name)
+        if module and module not in resolved:
+            resolved.append(module)
+    return resolved
+
+
+def run_xts_rerun(regression: dict[str, Any], serial: str,
+                  run_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Rebuild the failing test items on the upgraded device and judge by the report.
+
+    受信任边界：runner 目录、task、report 目录与模块清单全部来自 profile 与流水线状态，
+    MR 文本与构建参数永不进入命令行。判定规则见 test_harness.verdict（全通过才 PASS）。
+    """
+    entry: dict[str, Any] = {"id": regression.get("id"), "kind": "xts-rerun",
+                             "device": serial, "status": "FAIL", "evidence": {}}
+    runner_dir = Path(str(regression.get("runner_dir") or "")).expanduser()
+    if not runner_dir.is_dir():
+        entry["evidence"] = {"error": f"runner_dir does not exist: {runner_dir}"}
+        return entry
+    config = runner_dir / str(regression.get("config") or "config/acts.json")
+    if not config.is_file():
+        entry["evidence"] = {"error": f"xdevice config not found: {config}"}
+        return entry
+    modules = modules_to_rerun(regression, run_state)
+    if not modules:
+        entry["status"] = "INCONCLUSIVE"
+        entry["evidence"] = {
+            "error": "no module to rerun: set regression.modules or register the triage "
+                     "failed modules in the pipeline state (artifacts.failedModules / artifacts.modules)",
+            "hint": "分诊阶段请写入 artifacts.failedModules（模块名清单），或从 artifacts.modules 的键推导",
+        }
+        return entry
+    session_root = Path(str(regression.get("session_root")
+                             or Path.home() / ".local/state/openharmony-ci-orchestrator/xts-runs"))
+    report_dir = session_root / time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+    report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    command = [
+        "xdevice", str(regression.get("action") or "run"), str(regression.get("task") or "acts"),
+        "-c", str(config),
+        "-sn", serial,
+        "-l", *modules,
+        "-rp", str(report_dir),
+        "-tcpath", str(runner_dir / "testcases"),
+        "-respath", str(runner_dir / "resource"),
+    ]
+    if isinstance(regression.get("testargs"), list) and regression["testargs"]:
+        command.extend(["-ta", *[str(item) for item in regression["testargs"]]])
+    entry["modules"] = modules
+    entry["command"] = " ".join(shlex.quote(part) for part in command)
+    entry["report_dir"] = str(report_dir)
+    timeout = int(regression.get("timeout_seconds") or 3600)
+    try:
+        output = run_command(command, timeout=timeout, check=False, max_capture=MAX_CAPTURE)
+    except (OSError, subprocess.SubprocessError) as error:
+        entry["evidence"] = {"error": f"xdevice could not run: {error}", "command": entry["command"]}
+        return entry
+    entry["runner_tail"] = captured(output)
+    try:
+        verdict = test_harness.verdict(report_dir, modules)
+    except test_harness.ReportError as error:
+        entry["status"] = "INCONCLUSIVE"
+        entry["evidence"] = {"error": str(error), "command": entry["command"],
+                             "runner_tail": entry["runner_tail"]}
+        return entry
+    entry["verdict"] = {key: verdict[key] for key in
+                        ("requested", "matched", "missing", "total", "passed", "failed",
+                         "skipped", "failed_cases", "report_files")}
+    entry["evidence"] = {
+        "report_dir": verdict["report_dir"],
+        "suites": [{"name": item["name"], "total": item["total"], "passed": item["passed"],
+                    "failed": item["failed"], "skipped": item["skipped"]}
+                   for item in verdict["suites"]],
+        "failed_cases": verdict["failed_cases"],
+        "runner_tail": entry["runner_tail"],
+    }
+    entry["status"] = verdict["status"]
+    return entry
+
+
+def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: dict[str, Any],
+                    run_state: dict[str, Any] | None = None) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     smoke = read_profile("a333-ota-smoke-v1")
     requested = ["a333-ota-smoke-v1", *regression_ids]
@@ -722,6 +824,10 @@ def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: 
         serial = device["serial"]
         if regression.get("kind") == "ota-ui-landscape-control-center":
             results.append(regression_ui_landscape_control_center(profile, regression, serial))
+            continue
+        if regression.get("kind") == "xts-rerun":
+            # "OTA 成功后重新跑测试用例"：按分诊报告里出错的测试项重跑（模块级）。
+            results.append(run_xts_rerun(regression, serial, run_state))
             continue
         if regression.get("kind") != "ota-smoke":
             raise Phase3Error(f"Regression profile {profile_id} has no trusted runner implementation")
@@ -1027,7 +1133,8 @@ def main() -> int:
             errors = "; ".join(str(attempt.get("error", "unknown OTA failure")) for attempt in attempts)
             result = finish_run(root, args.run_id, {"status": "failed", "finished_at": utc_now(), "error": errors, "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state, "attempts": attempts})
         else:
-            regression = run_regressions(profile, state["phase3"].get("regression_profiles", []), successful_device)
+            regression = run_regressions(profile, state["phase3"].get("regression_profiles", []),
+                                         successful_device, state)
             status = "passed" if regression["status"] == "PASS" else regression["status"].lower()
             result = finish_run(root, args.run_id, {"status": status, "finished_at": utc_now(), "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state, "attempts": attempts, "regression": regression})
         result = record_mr_note(root, args.run_id, result)

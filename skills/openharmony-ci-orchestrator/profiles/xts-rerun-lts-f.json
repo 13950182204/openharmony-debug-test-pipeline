@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "xts-rerun-lts-f",
+  "boards": [
+    "a333-2g-primary-standby"
+  ],
+  "kind": "xts-rerun",
+  "description": "OTA 成功后用本地 LTS 测试包重跑分诊报告里出错的测试项（模块级）；只有请求的测试项全部用例通过才算 PASS。",
+  "runner_dir": "/mnt/d/ohos/XTS6.1/office/acts-LTS-f",
+  "action": "run",
+  "task": "acts",
+  "config": "config/user_config.xml",
+  "timeout_seconds": 5400,
+  "pass_criteria": [
+    "请求的每个测试项都有结果记录（没跑到 ≠ 通过）",
+    "所有用例 result=true",
+    "任一用例失败即 FAIL；一个都没跑成记 INCONCLUSIVE"
+  ],
+  "notes": [
+    "modules 留空时取流水线状态里的分诊失败项：artifacts.failedModules（推荐）或 artifacts.modules 的键。",
+    "-c 指向 user_config.xml（实测传 acts.json 会 ParamError）；任务名由 -task 指定（run acts）。",
+    "runner_dir 按执行宿主给：WSL 侧用 /mnt/... 路径，Windows 侧用 D:/... 路径。",
+    "换套件/LTS 版本只改 runner_dir 与 task 两项。",
+    "报告落在 session_root/<时间戳>/，由 test_harness.verdict 判定并作为 MR 证据。"
+  ]
+}

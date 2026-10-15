@@ -94,3 +94,7 @@ Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水�
   `HEAD is now at <sha>` 检出记录。仅分支的构建证据不足，会被拦截。
 - 内置 OTA 冒烟检查始终运行。没有显式功能回归 profile 的运行报告 `INCONCLUSIVE`，
   绝不报告功能回归通过。
+- **回归重跑测试项**（用户口径，2026-10-15）：OTA 成功后用 `--regression-profile xts-rerun-lts-f`
+  重跑分诊报告里出错的整块测试项（模块级，取自流水线状态 `artifacts.failedModules`）；
+  判定只看报告（**xdevice 对没跑起来的模块也 exit 0**）：全部通过 → PASS，任一失败 → FAIL，
+  `unavailable`/无记录 → `INCONCLUSIVE`。执行宿主需要有可达的 hdc 服务。

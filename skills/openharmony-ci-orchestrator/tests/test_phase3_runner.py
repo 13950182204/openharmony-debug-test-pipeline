@@ -29,6 +29,7 @@ import phase3_runner as runner  # noqa: E402
 import ci_orchestrator as orchestrator  # noqa: E402
 import gitlab_pipeline as platform  # noqa: E402
 import jenkins_api  # noqa: E402
+import test_harness  # noqa: E402
 
 GATE_SHA = "a1b2c3d4e5f61111111111111111111111111111"
 GATE_JOB = "OpenHarmony-V6.1-MR-Gate"
@@ -679,6 +680,157 @@ class Phase3RunnerTests(unittest.TestCase):
                 self.assertIn("No archived OTA package matched", state["phase3"]["error"])
             finally:
                 stub.stop()
+
+
+class XtsRerunTests(unittest.TestCase):
+    """OTA 成功后重跑测试用例：报告解析、模块匹配与判定规则。"""
+
+    def write_report(self, root: Path, name: str, cases: list[tuple[str, str, bool]]) -> Path:
+        suites: dict[str, list[tuple[str, str, bool]]] = {}
+        for module, case, ok in cases:
+            suites.setdefault(module, []).append((case, module, ok))
+        parts = ["<testsuites name='summary_report'>"]
+        for module, items in suites.items():
+            failed = sum(1 for _, _, ok in items if not ok)
+            parts.append(f"<testsuite name='{module}' failures='{failed}'>")
+            for case, classname, ok in items:
+                parts.append(f"<testcase name='{case}' classname='{classname}' "
+                             f"result='{'true' if ok else 'false'}' status='run'/>")
+            parts.append("</testsuite>")
+        parts.append("</testsuites>")
+        directory = root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "summary_report.xml").write_text("".join(parts), encoding="utf-8")
+        return directory
+
+    def test_verdict_passes_only_when_every_case_passed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good = self.write_report(root, "pass", [
+                ("ActsUdmfTest", "case_a", True), ("ActsUdmfTest", "case_b", True)])
+            self.assertEqual(test_harness.verdict(good, ["ActsUdmfTest"])["status"], "PASS")
+
+            bad = self.write_report(root, "fail", [
+                ("ActsUdmfTest", "case_a", True), ("ActsUdmfTest", "case_b", False)])
+            report = test_harness.verdict(bad, ["ActsUdmfTest"])
+            self.assertEqual(report["status"], "FAIL")
+            self.assertEqual(report["failed"], 1)
+            self.assertEqual(report["failed_cases"][0]["name"], "case_b")
+
+    def test_verdict_is_inconclusive_when_nothing_ran(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = self.write_report(root, "empty", [])
+            self.assertEqual(test_harness.verdict(empty, ["ActsUdmfTest"])["status"], "INCONCLUSIVE")
+            report = test_harness.verdict(empty, ["ActsNotBuiltTest"])
+            self.assertEqual(report["status"], "INCONCLUSIVE")
+            self.assertEqual(report["missing"], ["ActsNotBuiltTest"])
+
+    def test_partial_coverage_is_not_reported_as_a_pass(self) -> None:
+        """请求了两个模块但只跑到一个：没跑到的不能算通过。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_dir = self.write_report(root, "partial", [("ActsAaaTest", "c1", True)])
+            report = test_harness.verdict(report_dir, ["ActsAaaTest", "ActsBbbTest"])
+            self.assertEqual(report["status"], "INCONCLUSIVE")
+            self.assertEqual(report["missing"], ["ActsBbbTest"])
+
+    def test_unavailable_module_is_inconclusive_not_a_pass(self) -> None:
+        """真实现场：xdevice 对"模块没跑起来"也 exit 0，报告里是 unavailable='1'。
+
+        实测取值：`[Environment-0101021] Test source required 1 devices, actually 0 devices
+        were found`。若只数 failures，这种"根本没跑"会被误判成通过。
+        """
+        directory = Path(tempfile.mkdtemp())
+        (directory / "summary_report.xml").write_text(
+            "<testsuites name='summary_report' failures='0' unavailable='1'>"
+            "<testsuite name='ActsAACommandPrintSyncTest' failures='0' tests='0' unavailable='1' "
+            "message='[Environment-0101021] Test source required 1 devices, actually 0 devices were found'/>"
+            "</testsuites>", encoding="utf-8")
+        report = test_harness.verdict(directory, ["ActsAACommandPrintSyncTest"])
+        self.assertEqual(report["status"], "INCONCLUSIVE")
+        self.assertEqual(report["unavailable"], ["ActsAACommandPrintSyncTest"])
+        self.assertIn("0 devices", report["unavailable_messages"][0])
+
+    def test_module_name_matching_is_tolerant_of_suite_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report_dir = self.write_report(Path(directory), "suffix", [
+                ("ActsUdmfTest-stage", "c1", True)])
+            report = test_harness.verdict(report_dir, ["ActsUdmfTest"])
+            self.assertEqual(report["status"], "PASS")
+            self.assertEqual(report["matched"], ["ActsUdmfTest-stage"])
+
+    def test_case_result_false_forms_are_all_treated_as_failure(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        (directory / "summary_report.xml").write_text(
+            "<testsuites><testsuite name='M'>"
+            "<testcase name='a' classname='M' result='FALSE'/>"
+            "<testcase name='b' classname='M' result='fail'/>"
+            "<testcase name='c' classname='M' status='error'/>"
+            "</testsuite></testsuites>", encoding="utf-8")
+        report = test_harness.summarize(directory)
+        self.assertEqual(report["failed"], 3)
+
+    def test_modules_to_rerun_prefers_explicit_profile_then_triage_state(self) -> None:
+        state = {"artifacts": {"failedModules": ["ActsUdmfTest", "ActsBmsTest"],
+                               "modules": {"ActsIgnoredTest": {"failed": 1}}}}
+        explicit = {"modules": ["ActsExplicitTest"]}
+        self.assertEqual(runner.modules_to_rerun(explicit, state), ["ActsExplicitTest"])
+        self.assertEqual(runner.modules_to_rerun({}, state),
+                         ["ActsUdmfTest", "ActsBmsTest", "ActsIgnoredTest"])
+        self.assertEqual(runner.modules_to_rerun({}, {"artifacts": {}}), [])
+
+    def test_module_name_derived_from_a_case_id(self) -> None:
+        self.assertEqual(test_harness.module_name_from_case("ActsUdmfTest#case_0100"),
+                         "ActsUdmfTest")
+        self.assertEqual(test_harness.module_name_from_case("ActsUdmfTest"), "ActsUdmfTest")
+        self.assertEqual(test_harness.module_name_from_case(""), "")
+
+    def test_run_xts_rerun_reports_inconclusive_without_modules(self) -> None:
+        regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
+                      "runner_dir": "/mnt/d/ohos/XTS6.1/office/acts-LTS-f"}
+        result = runner.run_xts_rerun(regression, "serial", {"artifacts": {}})
+        self.assertEqual(result["status"], "INCONCLUSIVE")
+        self.assertIn("no module to rerun", result["evidence"]["error"])
+
+    def test_run_xts_rerun_fails_closed_when_the_runner_is_missing(self) -> None:
+        regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
+                      "runner_dir": "/nonexistent/runner", "modules": ["ActsXTest"]}
+        result = runner.run_xts_rerun(regression, "serial", {"artifacts": {}})
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("runner_dir does not exist", result["evidence"]["error"])
+
+    def test_run_xts_rerun_judges_by_the_real_report_directory(self) -> None:
+        """端到端（离线）：假的 xdevice 只写报告，判定必须来自报告而不是退出码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            runner_dir = Path(directory) / "acts-LTS-f"
+            (runner_dir / "config").mkdir(parents=True)
+            (runner_dir / "config" / "acts.json").write_text("{}", encoding="utf-8")
+            (runner_dir / "testcases").mkdir()
+            (runner_dir / "resource").mkdir()
+            session_root = Path(directory) / "xts-runs"
+
+            def fake_run(command, timeout=60, check=True, max_capture=8000):
+                # 模拟 xdevice：把报告写进 -rp 指定的目录后"退出码 0"
+                report_dir = Path(command[command.index("-rp") + 1])
+                report_dir.mkdir(parents=True, exist_ok=True)
+                (report_dir / "summary_report.xml").write_text(
+                    "<testsuites><testsuite name='ActsUdmfTest' failures='1'>"
+                    "<testcase name='ok' classname='ActsUdmfTest' result='true'/>"
+                    "<testcase name='bad' classname='ActsUdmfTest' result='false'/>"
+                    "</testsuite></testsuites>", encoding="utf-8")
+                return "xdevice finished"
+
+            regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
+                          "runner_dir": str(runner_dir), "modules": ["ActsUdmfTest"],
+                          "session_root": str(session_root)}
+            with mock.patch.object(runner, "run_command", side_effect=fake_run):
+                result = runner.run_xts_rerun(regression, "serial-1", {"artifacts": {}})
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["verdict"]["total"], 2)
+            self.assertIn("-sn", result["command"])
+            self.assertIn("serial-1", result["command"])
+            self.assertEqual(result["evidence"]["failed_cases"][0]["name"], "bad")
 
 
 class OrchestratorTests(unittest.TestCase):
