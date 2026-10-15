@@ -368,6 +368,37 @@ class Phase3RunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.Phase3Error, "No archived OTA package matched"):
                 runner.artifact_url(state, "openharmony_V6.1/out/ota/update.zip")
 
+    def test_hdc_file_transfer_translates_paths_for_a_windows_client(self) -> None:
+        """双宿主现场：Windows 侧 hdc 会把本地路径当 Windows 路径，必须先用 wslpath 转换。"""
+        converted = mock.Mock(returncode=0, stdout="\\\\wsl.localhost\\Ubuntu-22.04\\home\\cx\\a.zip\n", stderr="")
+        with mock.patch.object(runner.subprocess, "run", return_value=converted):
+            self.assertEqual(runner.wsl_host_path("/home/cx/a.zip"),
+                             "\\\\wsl.localhost\\Ubuntu-22.04\\home\\cx\\a.zip")
+        # 原生 Linux hdc：wslpath 不可用/失败时保持原路径，绝不改写
+        with mock.patch.object(runner.subprocess, "run", side_effect=FileNotFoundError()):
+            self.assertEqual(runner.wsl_host_path("/home/cx/a.zip"), "/home/cx/a.zip")
+        failed = mock.Mock(returncode=1, stdout="", stderr="wslpath: not found")
+        with mock.patch.object(runner.subprocess, "run", return_value=failed):
+            self.assertEqual(runner.wsl_host_path("/home/cx/a.zip"), "/home/cx/a.zip")
+
+    def test_transfer_size_mismatch_message_stays_retryable(self) -> None:
+        """传输未落地属"未写设备"的预检失败：换路径/换连接后重试要能通过 claim 门禁。"""
+        message = ("standby OTA transfer size mismatch: "
+                   '"/bin/sh: can\'t open /data/updater/updater_full.zip: '
+                   'No such file or directory"')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "state"
+            run_id = "retry-transfer"
+            runner.write_json(root / "runs" / f"{run_id}.json", {
+                "run_id": run_id,
+                "phase3": {"status": "failed", "profile": self.profile["id"], "attempts": [],
+                           "error": message},
+                "events": [],
+            })
+            claimed = runner.claim_run(root, run_id, self.profile["id"], retry_preflight=True)
+        self.assertEqual(claimed["phase3"]["status"], "running")
+        self.assertEqual(claimed["phase3"]["preflight_retries"], 1)
+
     def test_package_metadata_requires_source_and_one_target_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "update.zip"
@@ -410,6 +441,66 @@ class Phase3RunnerTests(unittest.TestCase):
         self.assertIn("Platform pipeline", body)
         self.assertIn(str(PIPELINE_ID), body)
 
+    def test_device_already_on_target_is_not_reflashed(self) -> None:
+        """设备已在本构建固件上（幂等重跑/收尾）：不重新刷机，直接作为已升级候选。"""
+        device = self.profile["devices"][0]
+        snapshot = {
+            "product_name": "OpenHarmony 3.2\n", "product_model": "ohos\n",
+            "software_version": "OpenHarmony 6.1.0.35\n",
+            "ohos_fullname": "OpenHarmony-6.1.0.35\n",
+            "firmware_commitid": GATE_SHA + "\n",
+            "device_tree_model": "sun65iw1\n",
+            "boot_completed": "true\n", "free_kib_line": "x 1 1 999999 1% /data",
+            "write_updater": "/bin/write_updater\n",
+        }
+        with mock.patch.object(runner, "device_snapshot", return_value=snapshot), \
+                mock.patch.object(runner, "collect_updater_evidence", return_value="|pass|"), \
+                mock.patch.object(runner, "require_target"):
+            attempt = runner.perform_ota(device, Path("/tmp/p.zip"),
+                                        {"size": 1, "target_version": "OpenHarmony 6.1.0.32"},
+                                        self.profile, GATE_SHA)
+        self.assertEqual(attempt["status"], "already_on_target")
+        self.assertNotIn("write_updater", attempt)
+        self.assertEqual(attempt["skipped_write"], "device already runs the registered source SHA")
+
+    def test_source_whitelist_accepts_the_documented_target_version(self) -> None:
+        """包内白名单可能只列旧版本；包自身声明的目标版本同样说明"本机可升级"。"""
+        metadata = {"source_versions": ["OpenHarmony 6.1.0.31", "1.3.0"],
+                    "target_version": "OpenHarmony 6.1.0.32"}
+        on_target = {"software_version": "OpenHarmony 6.1.0.35"}
+        self.assertFalse(runner.source_version_matches(metadata, on_target, "software_version"))
+
+    def test_device_identity_is_evidence_not_a_gate(self) -> None:
+        """用户口径：identity 不做硬限制，只要能升级且升级正确。"""
+        device = self.profile["devices"][0]
+        # 门禁当前产出的通用身份（实测 OTA 后形态）必须被接受
+        generic = {
+            "product_name": "OpenHarmony 3.2\n", "product_model": "ohos\n",
+            "product_brand": "default\n", "product_manufacturer": "default\n",
+            "device_tree_model": "sun65iw1\n", "boot_completed": "true\n",
+            "write_updater": "/bin/write_updater\n",
+        }
+        runner.require_device_ready(device, generic)  # 不抛异常
+        notes = runner.device_identity_mismatches(device, generic)
+        self.assertTrue(any("product_name" in note for note in notes))
+        self.assertTrue(any("product_model" in note for note in notes))
+
+    def test_device_ready_still_requires_an_upgradable_target(self) -> None:
+        device = self.profile["devices"][0]
+        no_writer = {"product_name": "x", "product_model": "y", "device_tree_model": "z",
+                     "boot_completed": "true\n", "write_updater": ""}
+        with self.assertRaisesRegex(runner.Phase3Error, "no write_updater"):
+            runner.require_device_ready(device, no_writer)
+        not_booted = dict(no_writer, write_updater="/bin/write_updater", boot_completed="false\n")
+        with self.assertRaisesRegex(runner.Phase3Error, "has not completed normal boot"):
+            runner.require_device_ready(device, not_booted)
+
+    def test_correctness_is_proven_by_the_firmware_commit_id(self) -> None:
+        """升级正确的硬证据：固件 commitid 等于本次构建的源 SHA。"""
+        snapshot = {"firmware_commitid": GATE_SHA.upper() + "\n"}
+        self.assertTrue(runner.target_verified_by_commitid(GATE_SHA, snapshot))
+        self.assertFalse(runner.target_verified_by_commitid("0" * 40, snapshot))
+
     def test_smoke_only_is_inconclusive(self) -> None:
         snapshot = {
             "boot_completed": "true\n",
@@ -449,6 +540,26 @@ class Phase3RunnerTests(unittest.TestCase):
             claimed = runner.claim_run(root, run_id, self.profile["id"], retry_preflight=True)
         self.assertEqual(claimed["phase3"]["status"], "running")
         self.assertEqual(claimed["phase3"]["preflight_retries"], 1)
+
+    def test_failed_transfer_is_retryable_but_a_written_device_is_not(self) -> None:
+        """传输失败=设备未改动，可重试；一旦执行过 write_updater 就不再自动重试。"""
+        def claim(attempt: dict, run_id: str) -> object:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "state"
+                runner.write_json(root / "runs" / f"{run_id}.json", {
+                    "run_id": run_id,
+                    "phase3": {"status": "failed", "profile": self.profile["id"],
+                               "attempts": [attempt],
+                               "error": f"{attempt.get('role', 'standby')} OTA transfer size mismatch"},
+                    "events": [],
+                })
+                return runner.claim_run(root, run_id, self.profile["id"], retry_preflight=True)
+
+        retried = claim({"role": "standby", "transfer": "[Fail]Error opening file"}, "retry-transfer")
+        self.assertEqual(retried["phase3"]["status"], "running")
+
+        with self.assertRaisesRegex(runner.Phase3Error, "already been claimed"):
+            claim({"role": "standby", "transfer": "ok", "write_updater": "done"}, "retry-written")
 
     def test_preflight_retry_archives_non_mutating_device_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

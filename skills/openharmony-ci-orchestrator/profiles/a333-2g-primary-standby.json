@@ -61,8 +61,9 @@
       "role": "standby",
       "serial": "ea010e325333324247102c35a3809ca5",
       "product_name": "OpenHarmony 3.2",
-      "product_model": "ohos",
-      "device_tree_model": "sun65iw1"
+      "product_model": "76A",
+      "device_tree_model": "sun65iw1",
+      "note": "门禁通用固件身份（2026-10-15 实测）；identity 非硬门禁"
     },
     {
       "role": "standby",

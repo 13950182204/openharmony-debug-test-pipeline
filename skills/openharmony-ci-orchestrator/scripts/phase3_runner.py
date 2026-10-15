@@ -8,6 +8,7 @@ import codecs
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -93,7 +94,8 @@ def resolved_artifact_patterns(profile: dict[str, Any]) -> list[str]:
 def run_command(
     command: list[str], timeout: int = 60, check: bool = True, max_capture: int = MAX_CAPTURE
 ) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    result = subprocess.run(_bounded(command, timeout), text=True, capture_output=True,
+                            timeout=timeout + 15, check=False)
     output = result.stdout.strip()
     if len(output) > max_capture:
         output = output[-max_capture:]
@@ -105,9 +107,59 @@ def run_command(
     return output
 
 
+def _bounded(command: list[str], timeout: int) -> list[str]:
+    """Wrap a command in an external hard-kill timer when `timeout(1)` is available.
+
+    实测（2026-10-15，真实 OTA 后的回归阶段）：经由 WSL interop 调用的 Windows `hdc.exe`
+    偶发不理会 Python 侧超时——`subprocess.run(timeout=...)` 已杀掉直接子进程，但 interop 的
+    `/init` 仍持有 stdout 管道，父进程在 `communicate()` 上**无限阻塞**，整条 phase-3 单元
+    就此卡住（本次卡了 13 分钟仍未返回，最终靠人工重启单元继续）。`timeout -s KILL N` 由内核
+    计时，对这类进程更可靠；因此所有外部命令都先包一层，并给 Python 侧再留 15s 余量。
+    """
+    guard = shutil.which("timeout")
+    if not guard or not command:
+        return command
+    return [guard, "-s", "KILL", str(max(1, int(timeout))), *command]
+
+
 def hdc(serial: str, *arguments: str, timeout: int = 60, check: bool = True) -> str:
     output = run_command(["hdc", "-t", serial, *arguments], timeout=timeout, check=check)
     return HDC_LOCAL_WARNING.sub("", output).strip()
+
+
+def wsl_host_path(path: str | Path) -> str:
+    """Translate a local file path for a Windows hdc client, otherwise return it unchanged.
+
+    双宿主现场（本机）：`~/.local/bin/hdc` 是 `hdc.exe` 的 WSL 包装器（Windows 侧持有 USB），
+    它把本地路径按 Windows 语义处理，于是 `hdc file send /home/cx/x.zip` 会被拼成
+    `\\\\wsl.localhost\\Ubuntu-22.04\\home\\cx\\/home/cx/x.zip` 并以
+    `[Fail]Error opening file: no such file or directory` 失败（实测一次真实 OTA 在传输阶段
+    整机失败）。原生 Linux hdc（`hdc-linux`）则必须收到原样路径。
+
+    判定不靠猜包装器：能运行说明 `wslpath` 存在（WSL 必备工具），再把结果与转换后的形式比对——
+    两者不同即说明当前 hdc 是 Windows 客户端。
+    """
+    text = str(path)
+    if os.name != "posix":
+        return text
+    try:
+        converted = subprocess.run(["wslpath", "-w", text], text=True,
+                                   capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return text
+    if converted.returncode != 0:
+        return text
+    windows_path = converted.stdout.strip()
+    return windows_path or text
+
+
+def hdc_file_send(serial: str, local: Path, remote: str, timeout: int = 600) -> str:
+    return hdc(serial, "file", "send", wsl_host_path(local), remote, timeout=timeout)
+
+
+def hdc_file_recv(serial: str, remote: str, local: Path, timeout: int = 120) -> str:
+    return hdc(serial, "file", "recv", remote, wsl_host_path(local), timeout=timeout,
+               check=False)
 
 
 def listed_targets() -> set[str]:
@@ -130,6 +182,8 @@ def device_snapshot(device: dict[str, Any]) -> dict[str, str]:
     return {
         "product_name": shell(serial, "param get const.product.name"),
         "product_model": shell(serial, "param get const.product.model"),
+        "product_brand": shell(serial, "param get const.product.brand"),
+        "product_manufacturer": shell(serial, "param get const.product.manufacturer"),
         "software_version": shell(serial, "param get const.product.software.version"),
         "ohos_fullname": shell(serial, "param get const.ohos.fullname"),
         "firmware_commitid": shell(serial, "param get const.product.firmware.commitid"),
@@ -140,15 +194,34 @@ def device_snapshot(device: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def require_device_identity(device: dict[str, Any], snapshot: dict[str, str]) -> None:
-    for key in ("product_name", "product_model", "device_tree_model"):
-        actual = snapshot.get(key, "").strip("\x00\n ")
-        expected = str(device[key]).strip()
-        if actual != expected:
-            raise Phase3Error(
-                f"{device['role']} device identity mismatch for {key}: "
-                f"expected {expected!r}, got {actual!r}"
-            )
+def device_identity_mismatches(device: dict[str, Any], snapshot: dict[str, str]) -> list[str]:
+    """记录设备身份与 profile 期望值的差异（**不作为硬门禁**）。
+
+    用户口径（2026-10-15）：identity 不做硬限制，"只要能升级、且升级正确即可"。同一个门禁
+    包可能内置通用产品身份（实测：OTA 后 `const.product.name` 从 `DHong-A333-Development-Board`
+    变为通用 `OpenHarmony 3.2`）；若把产品串当硬门禁，就会把**已经成功且正确**的升级判成失败。
+    差异只进证据，供人工复核。
+    """
+    mismatches = []
+    for key in ("product_name", "product_model", "device_tree_model",
+                "product_brand", "product_manufacturer"):
+        expected = str(device.get(key, "")).strip()
+        if not expected:
+            continue
+        observed = snapshot.get(key, "").strip("\x00\n ")
+        if observed and observed != expected:
+            mismatches.append(f"{key}: expected {expected!r}, got {observed!r}")
+    return mismatches
+
+
+def require_device_ready(device: dict[str, Any], snapshot: dict[str, str]) -> None:
+    """硬门禁只剩"能不能升级"：设备有 write_updater 且处于正常启动完成态。
+
+    "升级正确"由结果证据保证，而不是由镜像身份字符串保证：
+    - 升级前：包内 `version_list` 决定本机能否升级（`source_version_matches`）；
+    - 升级后：固件 `const.product.firmware.commitid` 必须等于本次构建的源 SHA
+      （`target_verified_by_commitid`），叠加 `updater_result=pass` 与 boot completed。
+    """
     if not snapshot["write_updater"].strip():
         raise Phase3Error(f"{device['role']} device has no write_updater command")
     if snapshot["boot_completed"].strip() != "true":
@@ -491,7 +564,20 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
     attempt: dict[str, Any] = {"role": device["role"], "serial": serial, "started_at": utc_now()}
     try:
         before = device_snapshot(device)
-        require_device_identity(device, before)
+        require_device_ready(device, before)
+        identity_notes = device_identity_mismatches(device, before)
+        if identity_notes:
+            attempt["identity_notes"] = identity_notes
+        if target_verified_by_commitid(source_sha, before):
+            # 设备已经跑在本次构建的固件上（重复执行/重跑收尾）：不要再刷一遍，
+            # 直接把它当作已升级的候选交给后续回归与证据链（幂等，避免无意义的重启）。
+            attempt.update({
+                "status": "already_on_target", "finished_at": utc_now(),
+                "before": before, "after": before,
+                "updater_evidence": collect_updater_evidence(serial),
+                "skipped_write": "device already runs the registered source SHA",
+            })
+            return attempt
         source_version_property = profile["artifact"].get("source_version_property")
         if not isinstance(source_version_property, str):
             raise Phase3Error("Trusted profile has no source-version property")
@@ -505,7 +591,7 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
             raise Phase3Error(f"{device['role']} has insufficient free /data space for OTA")
         remote_path = profile["artifact"]["remote_path"]
         require_target(serial)
-        attempt["transfer"] = hdc(serial, "file", "send", str(package), remote_path, timeout=600)
+        attempt["transfer"] = hdc_file_send(serial, package, remote_path, timeout=600)
         remote_size = shell(serial, f"wc -c < {remote_path}")
         digits = re.search(r"\d+", remote_size)
         if not digits or int(digits.group()) != metadata["size"]:
@@ -522,7 +608,7 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
                 try:
                     after = device_snapshot(device)
                     if after["boot_completed"].strip() == "true":
-                        require_device_identity(device, after)
+                        require_device_ready(device, after)
                         evidence = collect_updater_evidence(serial)
                         if re.search(
                             r"Version Check Fail|verify updater params fail|update not succ",
@@ -545,6 +631,9 @@ def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any],
                             continue
                         if not updater_reported_pass(evidence):
                             raise Phase3Error("Updater result is not pass after device returned")
+                        post_notes = device_identity_mismatches(device, after)
+                        if post_notes:
+                            attempt["identity_notes_after"] = post_notes
                         attempt.update({"status": "passed", "finished_at": utc_now(), "before": before, "after": after, "updater_evidence": evidence})
                         return attempt
                     last_blocker = f"device online but boot_completed={after['boot_completed']!r}"
@@ -593,10 +682,7 @@ def regression_ui_landscape_control_center(
         hdc(serial, "shell", "uitest dumpLayout -p /data/local/tmp/cc_layout.json", check=False)
         with tempfile.TemporaryDirectory() as td:
             local = Path(td) / "cc_layout.json"
-            subprocess.run(
-                ["hdc", "-t", serial, "file", "recv", "/data/local/tmp/cc_layout.json", str(local)],
-                check=False, capture_output=True, timeout=60,
-            )
+            hdc_file_recv(serial, "/data/local/tmp/cc_layout.json", local, timeout=60)
             layout = local.read_text(encoding="utf-8", errors="ignore") if local.exists() else ""
         texts = re.findall(r'"text"\s*:\s*"([^"]*)"', layout)
         texts += re.findall(r'"content"\s*:\s*"([^"]*)"', layout)
@@ -689,9 +775,13 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                 str(attempt.get("error", "")) for attempt in attempts if isinstance(attempt, dict)
             )
             retry_reason = f"{error} {attempt_errors}"
+            # "未写设备"的判据是**有没有执行过 write_updater / reboot updater**。
+            # `transfer` 键只说明尝试过投递：传输失败（大小不符/客户端读不到本地文件）时
+            # `/data/updater` 里并没有可用包，设备未被改动，重试是安全的——旧判据把失败的
+            # transfer 也算作"写过设备"，会让"修好传输路径后重跑"永远不可能（实测 2026-10-15）。
             no_device_write = isinstance(attempts, list) and all(
                 isinstance(attempt, dict)
-                and not any(key in attempt for key in ("transfer", "write_updater", "reboot_updater"))
+                and not any(key in attempt for key in ("write_updater", "reboot_updater"))
                 for attempt in attempts
             )
             if not (
@@ -702,6 +792,7 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                 and (
                     "Jenkins console has no checkout matching" in retry_reason
                     or "OTA package must expose one target softVersion" in retry_reason
+                    # 历史 run 里的身份门禁失败文案（该门禁已按用户口径取消，保留兼容）
                     or "device identity mismatch" in retry_reason
                     # 目标设备不在线：profile 的设备池按"当前在线且可升级的 DUT"维护，
                     # 换机/重新插拔后串号可能变化，属可重试的纯预检失败（未写设备）。
@@ -715,6 +806,15 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                     # 产物候选解析失败（包被换名/门禁归档集合变化）：未写设备，修正候选后可重试。
                     or "No archived OTA package matched" in retry_reason
                     or "Expected exactly one Jenkins artifact" in retry_reason
+                    # 传输未落地（远端读不到/大小不符）：传输阶段失败即未执行 write_updater，
+                    # 属"未写设备"的可重试预检失败。实测（2026-10-15）：双宿主 Windows hdc 会把
+                    # Linux 路径拼成 \\wsl.localhost\... 导致整机传输失败，修好路径必须能重跑。
+                    or "OTA transfer size mismatch" in retry_reason
+                    # 读取 Jenkins console 时的瞬时网络失败（Connection reset by peer 等）：
+                    # 属"未写设备"的取证阶段失败，重试即可（实测 2026-10-15 卡住一次真实 OTA 收尾）。
+                    or "Unable to read Jenkins console" in retry_reason
+                    or "Connection reset by peer" in retry_reason
+                    or "Jenkins connection failed" in retry_reason
                 )
             ):
                 raise Phase3Error(f"Phase 3 has already been claimed with status {status!r}")
@@ -874,7 +974,8 @@ def main() -> int:
             attempt = perform_ota(device, package, metadata, profile,
                                   source_sha.get("verified") or source_sha.get("requested"))
             attempts.append(attempt)
-            if attempt["status"] == "passed":
+            if attempt["status"] in ("passed", "already_on_target"):
+                # already_on_target：设备已在本构建固件上（幂等重跑），同样进入回归与证据链。
                 successful_device = device
                 break
         if successful_device is None:

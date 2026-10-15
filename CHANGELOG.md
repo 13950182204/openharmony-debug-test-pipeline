@@ -2,6 +2,52 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.1] - 2026-10-15
+
+真机 OTA 演练（MR 226 / A333 门禁构建 #31）暴露并修掉的问题。**两台 A333 现均运行
+`OpenHarmony-6.1.0.35`，其 `const.product.firmware.commitid` 精确等于 MR head
+`b0ca72ac95eeb38578e31150dc853ec92c6d358f`**；MR 226 上的 CI 证据评论已按新格式更新。
+
+### 修复（全部由真机演练暴露）
+
+- **双宿主 hdc 传包必然失败（致命）**：本机 `hdc` 是 Windows `hdc.exe` 的 WSL 包装器，
+  会把本地路径当 Windows 路径拼成 `\\wsl.localhost\Ubuntu-22.04\home\cx\/home/cx/...`，
+  传输以 `[Fail]Error opening file` 结束，整条 OTA 在投递阶段失败。现在所有本地文件参数
+  （`hdc file send` / `file recv`）先经 `wslpath -w` 转换；原生 Linux hdc（无 `wslpath`）保持原路径。
+  已用 1 MiB 探针双向验证（旧写法失败、新写法成功）。
+- **`hdc.exe` 卡死会拖住整个单元**：经 WSL interop 调用的 Windows 进程偶发不理会 Python 侧超时
+  （子进程被杀但 `/init` 仍持有 stdout 管道），单元因此无限阻塞（实测卡 13 分钟）。
+  所有外部命令现包一层 `timeout -s KILL N`，由内核计时兜底。
+- **重试门禁自相矛盾**：`no_device_write` 把"失败的 transfer"也算作写过设备，导致
+  "修好传输路径后重跑"永远不可能；而允许重试的原因里又包含传输失败。判据改为只看
+  `write_updater` / `reboot_updater`；并补充"取 console 瞬时网络失败（Connection reset）"为可重试原因。
+- **身份硬门禁会误杀成功升级**：门禁包内置通用产品身份，升级后 `const.product.name` 由
+  `DHong-A333-Development-Board` 变为 `OpenHarmony 3.2`。按用户口径（identity 不做硬限制，
+  只要能升级且升级正确），产品名/型号/品牌/厂商降级为**证据**（记入 `attempt.identity_notes`），
+  硬门禁只剩"有 `write_updater` + 正常启动完成"，"升对了没有"由
+  `firmware.commitid == 源 SHA` + `updater_result=pass` + boot completed 共同证明。
+
+### 新增
+
+- **幂等"已在本构建上"**：设备固件 commitid 已等于本次源 SHA 时，`perform_ota` 直接返回
+  `already_on_target`——不再重复刷机（避免无意义重启），仍照常完成回归与证据链。设备池里另一台
+  A333 正是这种情况，本轮即以此路径通过。
+- `test/tools/undefined_names.py` + `pnpm run check:names`：静态"用了但没绑定"的检查，并入
+  `pnpm run test:python`。直接起因是本次重构中一次替换误删赋值行，直到设备执行才以
+  `NameError` 暴露（单测覆盖不到该分支）。
+
+### 实测证据（MR 226）
+
+| 项 | 值 |
+| --- | --- |
+| 平台流水线 | `410` success → 汇总门禁 `#50` SUCCESS（`gate-plan.json` chips `[rk3568, a333]`） |
+| 认领构建 | `OpenHarmony-V6.1-MR-a333 #31`（四参数逐项相符） |
+| 包 | `openharmony_V6.1/out/ota/update.zip`，794,042,102 字节，SHA-256 `fb99a437…ac9a7` |
+| 刷机 | `updater_result = /data/updater/updater_full.zip\|pass\|\|install_time=77.83\|` |
+| 升级正确性 | 两台设备的 `const.product.firmware.commitid` = MR head SHA；`bootevent.boot.completed=true` |
+| 回归 | `a333-ota-smoke-v1` PASS；无功能回归 profile ⇒ `INCONCLUSIVE` |
+| MR 证据评论 | `<comments>`（带 run 标记，重复执行按 run id 幂等更新） |
+
 ## [1.2.0] - 2026-10-15
 
 **移除自触发 Jenkins，改为依托平台自带 CI**：MR 提交后 GitLab 平台已自动跑固件门禁，
