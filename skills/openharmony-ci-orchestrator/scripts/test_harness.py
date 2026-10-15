@@ -62,9 +62,13 @@ def parse_summary(summary_path: Path) -> dict[str, Any]:
         name = str(suite.get("name") or "").strip()
         if not name:
             continue
-        record = suites.setdefault(name, {"name": name, "total": 0, "passed": 0, "failed": 0,
-                                          "skipped": 0, "failed_cases": [], "time": suite.get("time"),
+        module = str(suite.get("modulename") or "").strip()
+        record = suites.setdefault(name, {"name": name, "module": module, "total": 0, "passed": 0,
+                                          "failed": 0, "skipped": 0, "failed_cases": [],
+                                          "time": suite.get("time"),
                                           "unavailable": False, "message": ""})
+        if module and not record.get("module"):
+            record["module"] = module
         # xdevice 在"模块没能跑起来"时也会 exit 0：<testsuite unavailable='1' message='...'>，
         # 实测取值就是 `[Environment-0101021] Test source required 1 devices, actually 0 devices
         # were found`。这种必须算"没跑成"，绝不能因为 failures=0 就判通过。
@@ -97,6 +101,54 @@ def parse_summary(summary_path: Path) -> dict[str, Any]:
     }
 
 
+def parse_result_file(path: Path) -> dict[str, Any] | None:
+    """Parse one `result/<module>.xml` (root `testsuites name=<module>`, cases grouped by class).
+
+    实测：`summary_report.xml` 里 `<testsuite name>` 是**测试类名**（如 `AACommandPrintTest`），
+    模块名在 `modulename` 属性或 `result/<模块>.xml` 的文件名里。按模块核对请用 result 文件。
+    """
+    try:
+        root = ElementTree.parse(path).getroot()
+    except (OSError, ElementTree.ParseError):
+        return None
+    tag = root.tag.rsplit("}", 1)[-1]
+    if tag == "testsuite":
+        module = str(root.get("name") or path.stem)
+        roots = [root]
+    else:
+        module = str(root.get("name") or path.stem)
+        roots = [child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"]
+    failed_cases: list[dict[str, Any]] = []
+    total = passed = failed = skipped = 0
+    unavailable = str(root.get("unavailable") or "").strip().lower() in ("1", "true", "yes")
+    message = str(root.get("message") or "").strip()[:300]
+    for suite in roots:
+        for case in suite:
+            if case.tag.rsplit("}", 1)[-1] != "testcase":
+                continue
+            state, reason = _case_state(case)
+            total += 1
+            if state == "pass":
+                passed += 1
+            elif state == "skip":
+                skipped += 1
+            else:
+                failed += 1
+                failed_cases.append({"class": str(case.get("classname") or suite.get("name") or ""),
+                                     "name": str(case.get("name") or ""), "reason": reason})
+    return {"name": module, "module": module, "total": total, "passed": passed, "failed": failed,
+            "skipped": skipped, "failed_cases": failed_cases, "unavailable": unavailable,
+            "message": message, "result_file": path.name}
+
+
+def find_result_files(report_dir: Path) -> list[Path]:
+    result_dir = report_dir / "result"
+    if not result_dir.is_dir():
+        return []
+    return [path for path in sorted(result_dir.glob("*.xml"))
+            if path.is_file() and path.stat().st_size]
+
+
 def find_reports(report_dir: Path) -> list[Path]:
     """All candidate xdevice XML reports under one report directory (recursive)."""
     if not report_dir.is_dir():
@@ -109,36 +161,53 @@ def find_reports(report_dir: Path) -> list[Path]:
 
 
 def summarize(report_dir: Path) -> dict[str, Any]:
-    """Merge every XML under a report directory into one module-level summary.
+    """Merge one xdevice report directory into module-level records.
 
-    同一个模块可能出现多个 `<testsuite>`（xdevice 分阶段执行），按名字合并；
-    失败用例去重后保留，供分诊与 MR 证据使用。
+    数据源优先级：`result/<模块>.xml`（按模块权威）> `summary_report.xml`（按 modulename 归并）。
+    后者在"模块没跑起来"时是唯一线索（那里 suite 名就是模块名且带 unavailable='1'）。
     """
     merged: dict[str, dict[str, Any]] = {}
-    files = find_reports(report_dir)
+    result_files = find_result_files(report_dir)
+    files: list[Path]
+
+    def merge(record_key: str, record: dict[str, Any]) -> None:
+        target = merged.setdefault(record_key, {
+            "name": record["name"], "module": record.get("module") or record["name"],
+            "total": 0, "passed": 0, "failed": 0, "skipped": 0, "failed_cases": [],
+            "time": None, "unavailable": False, "message": "",
+        })
+        if record.get("unavailable"):
+            target["unavailable"] = True
+        if record.get("message") and not target["message"]:
+            target["message"] = record["message"]
+        target["total"] += record.get("total", 0)
+        target["passed"] += record.get("passed", 0)
+        target["failed"] += record.get("failed", 0)
+        target["skipped"] += record.get("skipped", 0)
+        for case in record.get("failed_cases", []):
+            key = (case["class"], case["name"])
+            if all((item["class"], item["name"]) != key for item in target["failed_cases"]):
+                target["failed_cases"].append(case)
+
+    if result_files:
+        files = [*result_files, *(p for p in find_reports(report_dir)
+                                 if p.name == "summary_report.xml")]
+        for path in result_files:
+            parsed = parse_result_file(path)
+            if parsed:
+                merge(parsed["name"], parsed)
+    else:
+        files = find_reports(report_dir)
     for path in files:
-        try:
-            parsed = parse_summary(path)
-        except ReportError:
-            continue
-        for suite in parsed["suites"]:
-            record = merged.setdefault(suite["name"], {
-                "name": suite["name"], "total": 0, "passed": 0, "failed": 0, "skipped": 0,
-                "failed_cases": [], "time": suite.get("time"),
-                "unavailable": False, "message": "",
-            })
-            if suite.get("unavailable"):
-                record["unavailable"] = True
-            if suite.get("message") and not record["message"]:
-                record["message"] = suite["message"]
-            record["total"] += suite["total"]
-            record["passed"] += suite["passed"]
-            record["failed"] += suite["failed"]
-            record["skipped"] += suite["skipped"]
-            for case in suite["failed_cases"]:
-                key = (case["class"], case["name"])
-                if all((item["class"], item["name"]) != key for item in record["failed_cases"]):
-                    record["failed_cases"].append(case)
+        if path.name == "summary_report.xml" or not result_files:
+            try:
+                parsed = parse_summary(path)
+            except ReportError:
+                continue
+            for suite in parsed["suites"]:
+                key = suite.get("module") or suite["name"]
+                suite = dict(suite, name=key)
+                merge(key, suite)
     suites = sorted(merged.values(), key=lambda item: item["name"])
     return {
         "report_dir": str(report_dir),

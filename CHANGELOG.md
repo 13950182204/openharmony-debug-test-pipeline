@@ -2,6 +2,38 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.3] - 2026-10-15
+
+**回归阶段：OTA 成功后重跑测试用例（用户口径）已打通并真机验证。**
+
+### 新增
+
+- `scripts/test_harness.py`：解析 xdevice 报告并判定 —— 请求的测试项**全部用例通过才 PASS**；
+  任一失败 → FAIL；模块没跑起来（`unavailable='1'`，如设备条件不满足）或没有任何用例记录 →
+  `INCONCLUSIVE`。数据源优先 `result/<模块>.xml`（按模块权威），退回 `summary_report.xml`
+  （那里 `<testsuite name>` 是**测试类名**，模块名在 `modulename` 属性——实测踩到）。
+- `phase3_runner` 新增受信任回归动作 `kind=xts-rerun`：模块清单取 profile `modules`，否则取
+  流水线状态 `artifacts.failedModules` / `artifacts.modules` 的键（即"分诊出错的整块测试项"）。
+- `profiles/xts-rerun-lts-f.json`：指向本地 LTS 运行器 `/mnt/d/ohos/XTS6.1/office/acts-LTS-f`。
+
+### 关键实现细节（都由真实故障换来）
+
+- **判定绝不能看退出码**：xdevice 对"模块根本没跑起来"同样 exit 0（报告里只有 `unavailable='1'`
+  与 `message=[Environment-...]`）。已用真实报告验证会记 `INCONCLUSIVE` 而非误判通过。
+- **xdevice 必须在 Windows 侧执行**：WSL 的 xdevice 连不到 hdc 服务（Windows hdc 只监听自身
+  127.0.0.1:8710，WSL 为 NAT 不可达；WSL 原生 hdc 又看不到设备），且 WSL 内核无 `vhci-hcd`
+  使 usbipd 路线也不通。故 profile 用 `runner_host: "windows"` + `windows_python`，
+  由 WSL runner 经 interop 调用，路径用 `wslpath` 自动换算。
+- **cwd 必须是运行器目录**：否则报 `[Environment-0101015] Task file does not exist`（`-c` 不替代）。
+- **interop 输出容错解码**：cmd.exe 按控制台代码页输出 GBK，严格 utf-8 会让整步抛
+  `UnicodeDecodeError`（已改为 `errors="replace"`）。
+
+### 真机验证
+
+同一台 A333（MR 226 门禁固件）上：`ActsAACommandPrintSyncTest` → `total=16 passed=16 failed=0`
+→ **PASS**，报告落在 `D:\ohos\XTS6.1\office\acts-LTS-f\reports\ci\<时间戳>\`，
+WSL 侧解析同一份报告得出结论。python 单测 55 → 68 项。
+
 ## [1.2.2] - 2026-10-15
 
 端到端流程审计后的 6 项加固（全部带单测），并新增 [docs/操作手册.md](docs/操作手册.md)。

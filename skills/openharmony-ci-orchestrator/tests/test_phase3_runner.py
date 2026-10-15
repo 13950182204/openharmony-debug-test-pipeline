@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -793,6 +794,58 @@ class XtsRerunTests(unittest.TestCase):
         self.assertEqual(result["status"], "INCONCLUSIVE")
         self.assertIn("no module to rerun", result["evidence"]["error"])
 
+    def test_windows_runner_translates_paths_and_uses_the_runner_dir_as_cwd(self) -> None:
+        """真机实测结论：xdevice 必须在 Windows 侧跑，且 cwd 必须是运行器目录。
+
+        两点都由真实故障换来：①WSL 侧跑得到 `0 devices`（连不到 Windows 的 hdc 服务）；
+        ②cwd 不是运行器目录时报 `Task file does not exist, file name: acts.json`。
+        顺带：interop 调用的 cmd.exe 输出 GBK 字节，必须容错解码，否则整步抛 UnicodeDecodeError。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            runner_dir = Path(directory) / "acts-LTS-f"
+            (runner_dir / "config").mkdir(parents=True)
+            # 真实 profile 指向 user_config.xml（任务文件 acts.json 由 xdevice 在 cwd/config 下自寻）
+            (runner_dir / "config" / "user_config.xml").write_text("<user_config/>", encoding="utf-8")
+            (runner_dir / "config" / "acts.json").write_text("{}", encoding="utf-8")
+            (runner_dir / "testcases").mkdir()
+            (runner_dir / "resource").mkdir()
+            regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
+                          "runner_dir": str(runner_dir), "modules": ["ActsXTest"],
+                          "runner_host": "windows",
+                          "windows_python": "C:\\Python38\\python.exe",
+                          "session_root": str(runner_dir / "reports")}
+            captured: dict[str, object] = {}
+
+            def fake_run(command, timeout=60, check=True, max_capture=8000, cwd=None,
+                         decode_errors="strict"):
+                captured.update(command=command, cwd=cwd, decode_errors=decode_errors)
+                return "xdevice ok"
+
+            with mock.patch.object(runner, "run_command", side_effect=fake_run):
+                result = runner.run_xts_rerun(regression, "SN123", {"artifacts": {}})
+            self.assertEqual(captured["decode_errors"], "replace")
+            self.assertEqual(captured["cwd"], str(runner_dir))
+            command = captured["command"]
+            self.assertEqual(command[0], "/mnt/c/Windows/System32/cmd.exe")
+            self.assertEqual(command[1], "/c")
+            self.assertIn("-m", command)
+            self.assertIn("xdevice", command)
+            self.assertTrue(any(part.endswith("python.exe") for part in
+                                str(command[2]).split()), str(command)[:200])
+            self.assertIn("SN123", command)
+            self.assertIn("-l", command)
+            # 假 xdevice 没写任何报告：没记录 ≠ 通过，但也不能说用例失败 → INCONCLUSIVE
+            self.assertEqual(result["status"], "INCONCLUSIVE")
+
+    def test_windows_path_translation(self) -> None:
+        self.assertEqual(runner.windows_path("/mnt/d/ohos/x"), "D:\\ohos\\x")
+        self.assertEqual(runner.windows_path("/mnt/c/Windows/Temp"), "C:\\Windows\\Temp")
+        # 已经是 Windows 形式时原样返回（幂等）
+        self.assertEqual(runner.windows_path("D:\\already\\windows"), "D:\\already\\windows")
+        # 非 /mnt 的绝对路径交给 wslpath 处理（同一台机器上与 hdc 传参用的是同一条规则）
+        converted = runner.windows_path("/tmp/x")
+        self.assertTrue(re.match(r"^([a-zA-Z]:\\\\|\\\\wsl)", converted), converted)
+
     def test_run_xts_rerun_fails_closed_when_the_runner_is_missing(self) -> None:
         regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
                       "runner_dir": "/nonexistent/runner", "modules": ["ActsXTest"]}
@@ -805,12 +858,14 @@ class XtsRerunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runner_dir = Path(directory) / "acts-LTS-f"
             (runner_dir / "config").mkdir(parents=True)
+            (runner_dir / "config" / "user_config.xml").write_text("<user_config/>", encoding="utf-8")
             (runner_dir / "config" / "acts.json").write_text("{}", encoding="utf-8")
             (runner_dir / "testcases").mkdir()
             (runner_dir / "resource").mkdir()
             session_root = Path(directory) / "xts-runs"
 
-            def fake_run(command, timeout=60, check=True, max_capture=8000):
+            def fake_run(command, timeout=60, check=True, max_capture=8000, cwd=None,
+                         decode_errors="strict"):
                 # 模拟 xdevice：把报告写进 -rp 指定的目录后"退出码 0"
                 report_dir = Path(command[command.index("-rp") + 1])
                 report_dir.mkdir(parents=True, exist_ok=True)

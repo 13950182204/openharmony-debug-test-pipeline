@@ -103,10 +103,17 @@ def resolved_artifact_patterns(profile: dict[str, Any]) -> list[str]:
 
 
 def run_command(
-    command: list[str], timeout: int = 60, check: bool = True, max_capture: int = MAX_CAPTURE
+    command: list[str], timeout: int = 60, check: bool = True, max_capture: int = MAX_CAPTURE,
+    cwd: str | None = None, decode_errors: str = "strict",
 ) -> str:
+    """Run one bounded external command.
+
+    `decode_errors="replace"`：经 WSL interop 调用的 Windows 程序（cmd.exe/xdevice）会按控制台
+    代码页输出 GBK 字节，严格 utf-8 解码会抛 UnicodeDecodeError 并让整步失败（实测一次）。
+    """
     result = subprocess.run(_bounded(command, timeout), text=True, capture_output=True,
-                            timeout=timeout + 15, check=False)
+                            timeout=timeout + 15, check=False, cwd=cwd,
+                            errors=decode_errors)
     output = result.stdout.strip()
     if len(output) > max_capture:
         output = output[-max_capture:]
@@ -739,6 +746,55 @@ def modules_to_rerun(regression: dict[str, Any], run_state: dict[str, Any] | Non
     return resolved
 
 
+def windows_path(path: str | Path) -> str:
+    """Convert a WSL path to its Windows form (`/mnt/d/x` → `D:\\x`).
+
+    xdevice 必须在 Windows 侧执行（USB 与 hdc 服务都在那边，见 docs/操作手册.md 5.5），
+    因此命令行参数要用 Windows 形式。
+    """
+    text = str(path)
+    if re.match(r"^[a-zA-Z]:[\\/]", text):
+        return text  # 已经是 Windows 形式
+    try:
+        converted = subprocess.run(["wslpath", "-w", text], text=True,
+                                   capture_output=True, timeout=30, check=False)
+        if converted.returncode == 0 and converted.stdout.strip():
+            return converted.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # wslpath 不可用时的兜底：只保证 /mnt/<盘符>/... 这种最常见形式
+    match = re.match(r"^/mnt/([a-zA-Z])/(.*)$", text)
+    if match:
+        return f"{match.group(1).upper()}:\\" + match.group(2).replace("/", "\\")
+    raise Phase3Error(f"Cannot convert to a Windows path (runner_host=windows): {text!r}")
+
+
+def build_xts_command(regression: dict[str, Any], runner_dir: Path, config: Path,
+                      report_dir: Path, modules: list[str], serial: str) -> list[str]:
+    """Build the xdevice command line for the configured execution host."""
+    windows = str(regression.get("runner_host") or "").lower() == "windows"
+    convert = windows_path if windows else (lambda value: str(value))
+    arguments = [
+        str(regression.get("action") or "run"), str(regression.get("task") or "acts"),
+        "-c", convert(config),
+        "-sn", serial,
+        "-l", *modules,
+        "-rp", convert(report_dir),
+        "-tcpath", convert(runner_dir / "testcases"),
+        "-respath", convert(runner_dir / "resource"),
+    ]
+    if isinstance(regression.get("testargs"), list) and regression["testargs"]:
+        arguments.extend(["-ta", *[str(item) for item in regression["testargs"]]])
+    if windows:
+        python = str(regression.get("windows_python") or "").strip()
+        if not python:
+            raise Phase3Error(
+                "runner_host=windows requires windows_python (path to the Windows interpreter "
+                "that has xdevice installed)")
+        return ["/mnt/c/Windows/System32/cmd.exe", "/c", python, "-m", "xdevice", *arguments]
+    return ["xdevice", *arguments]
+
+
 def run_xts_rerun(regression: dict[str, Any], serial: str,
                   run_state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Rebuild the failing test items on the upgraded device and judge by the report.
@@ -752,7 +808,7 @@ def run_xts_rerun(regression: dict[str, Any], serial: str,
     if not runner_dir.is_dir():
         entry["evidence"] = {"error": f"runner_dir does not exist: {runner_dir}"}
         return entry
-    config = runner_dir / str(regression.get("config") or "config/acts.json")
+    config = runner_dir / str(regression.get("config") or "config/user_config.xml")
     if not config.is_file():
         entry["evidence"] = {"error": f"xdevice config not found: {config}"}
         return entry
@@ -765,28 +821,33 @@ def run_xts_rerun(regression: dict[str, Any], serial: str,
             "hint": "分诊阶段请写入 artifacts.failedModules（模块名清单），或从 artifacts.modules 的键推导",
         }
         return entry
-    session_root = Path(str(regression.get("session_root")
-                             or Path.home() / ".local/state/openharmony-ci-orchestrator/xts-runs"))
-    report_dir = session_root / time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
-    report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    command = [
-        "xdevice", str(regression.get("action") or "run"), str(regression.get("task") or "acts"),
-        "-c", str(config),
-        "-sn", serial,
-        "-l", *modules,
-        "-rp", str(report_dir),
-        "-tcpath", str(runner_dir / "testcases"),
-        "-respath", str(runner_dir / "resource"),
-    ]
-    if isinstance(regression.get("testargs"), list) and regression["testargs"]:
-        command.extend(["-ta", *[str(item) for item in regression["testargs"]]])
+    # 报告目录默认放在运行器目录下：Windows 侧执行时两端口径都能看到同一份报告。
+    session_root = Path(str(regression.get("session_root") or (runner_dir / "reports" / "ci")))
+    try:
+        report_dir = session_root / time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as error:
+        entry["evidence"] = {"error": f"cannot create report directory under {session_root}: {error}"}
+        return entry
+    try:
+        command = build_xts_command(regression, runner_dir, config, report_dir, modules, serial)
+    except Phase3Error as error:
+        entry["evidence"] = {"error": str(error)}
+        return entry
     entry["modules"] = modules
+    entry["runner_host"] = str(regression.get("runner_host") or "local")
     entry["command"] = " ".join(shlex.quote(part) for part in command)
     entry["report_dir"] = str(report_dir)
     timeout = int(regression.get("timeout_seconds") or 3600)
     try:
-        output = run_command(command, timeout=timeout, check=False, max_capture=MAX_CAPTURE)
-    except (OSError, subprocess.SubprocessError) as error:
+        output = run_command(
+            command, timeout=timeout, check=False, max_capture=MAX_CAPTURE,
+            # xdevice 以 cwd 为基准找 config/<task>.json（`-c` 不替代这一点，实测报
+            # [Environment-0101015] Task file does not exist, file name: acts.json）。
+            cwd=str(runner_dir) if runner_dir.is_dir() else None,
+            decode_errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError, Phase3Error) as error:
         entry["evidence"] = {"error": f"xdevice could not run: {error}", "command": entry["command"]}
         return entry
     entry["runner_tail"] = captured(output)

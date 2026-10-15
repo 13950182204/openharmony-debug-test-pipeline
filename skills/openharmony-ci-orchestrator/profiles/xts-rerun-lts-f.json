@@ -18,9 +18,12 @@
   ],
   "notes": [
     "modules 留空时取流水线状态里的分诊失败项：artifacts.failedModules（推荐）或 artifacts.modules 的键。",
-    "-c 指向 user_config.xml（实测传 acts.json 会 ParamError）；任务名由 -task 指定（run acts）。",
-    "runner_dir 按执行宿主给：WSL 侧用 /mnt/... 路径，Windows 侧用 D:/... 路径。",
-    "换套件/LTS 版本只改 runner_dir 与 task 两项。",
-    "报告落在 session_root/<时间戳>/，由 test_harness.verdict 判定并作为 MR 证据。"
-  ]
+    "-c 指向 user_config.xml（实测传 acts.json 会 ParamError）。",
+    "runner_host=windows：xdevice 必须在 Windows 侧执行——WSL 里的 xdevice 连不到 hdc 服务（Windows hdc 只监听自己的 127.0.0.1:8710，WSL 为 NAT 网络不可达），而 USB 由 Windows 持有。",
+    "runner_host=windows 时命令行参数自动换算成 Windows 形式（/mnt/d/... → D:\\...），报告写在 D 盘，WSL 侧可直接解析。",
+    "判定只看报告（xdevice 对没跑起来的模块也 exit 0）：全部通过 → PASS，任一失败 → FAIL，unavailable/无记录 → INCONCLUSIVE。"
+  ],
+  "runner_host": "windows",
+  "windows_python": "C:\\Users\\super_JunieR\\AppData\\Local\\Programs\\Python\\Python38\\python.exe",
+  "session_root": "/mnt/d/ohos/XTS6.1/office/acts-LTS-f/reports/ci"
 }
