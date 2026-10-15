@@ -2,6 +2,88 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.0] - 2026-10-15
+
+**移除自触发 Jenkins，改为依托平台自带 CI**：MR 提交后 GitLab 平台已自动跑固件门禁，
+插件不再自己 POST `buildWithParameters`；Jenkins 端点从 `192.168.13.121:8080` 切到
+平台门禁主机 `192.168.97.54:8080`，后续自动 OTA 与回归使用门禁构建产出的包。
+
+### 背景（实测取证）
+
+- 项目 `harmony/system/v9611/openharmony_V6.1` 已配外部 CI
+  `config/mr-gate/gitlab-entrypoint.yml@harmony/system/v9611/jenkins-auto-build`：
+  MR 事件 → job `openharmony-mr-gate`（专用 Runner `OpenHarmony MR gate bridge`，IP
+  192.168.97.54）→ `bridge.py` POST `OpenHarmony-V6.1-MR-Gate`
+  （`MR_IID/SOURCE_SHA/TARGET_BRANCH/GITLAB_PIPELINE_ID`）→ 门禁按 diff 路由顺序
+  `build job:` `OpenHarmony-V6.1-MR-{rk3568,a333}`，归档
+  `gate-plan.json` + `openharmony_V6.1/out/ota/*.zip`（`update.zip` 或 `updater_full.zip`）。
+- 项目设置已是"流水线成功才允许合并""禁止跳过流水线"；目标分支白名单
+  `v6.1.0.31_release`/`v6.1.0.35_lts`，其他分支只有明确标记的轻量任务。
+- 编译参数（`BUILD_MODE/FIRMWARE_TYPE/FIRMWARE_BRANCH/Openharmony_Devices`）由门禁任务
+  **服务端固定**，调用方只给 MR 身份四元组；因此旧插件按 `FIRMWARE_BRANCH/BUILD_MODE/
+  FIRMWARE_TYPE` 触发与核对的做法整体失效。
+- 旧主机仍在服务旧作业，但旧账号 token 打到新主机是 403；门禁服务账号权限限定在门禁作业。
+
+### 移除（Breaking）
+
+- `trigger_jenkins_build.py` → 重命名并瘦身为 **`jenkins_api.py`**（只读）：删除
+  `buildWithParameters` 入队、queue 解析、crumb 获取、`--dry-run/--verify-job/--wait-seconds/
+  --allow-anonymous/--parameter` 触发 CLI。代码中已无任何构建触发端点。
+- `ci_orchestrator.py`：删除 `register`（只接受 phase-1 触发结果）与全部 queue/触发分支
+  （含每 tick 产生噪音的 `queue_unresolved`），删除 LLM 交接会话 `launch_agent`/`agent_prompt`。
+- `reconcile` 不再把"自己触发的构建"当状态源。
+
+### 新增
+
+- **`gitlab_pipeline.py`**：只读平台观察层（`glab api`）。读 MR 的 `head_pipeline{id,status,sha}`、
+  流水线详情、job trace；从 trace 提取 `Jenkins gate: <build url>`；把平台状态映射为
+  `gate_pending/gate_succeeded/gate_failed/gate_aborted/gate_not_in_scope`。
+- **`orchestrator_config.py`**：`jenkins.env`（0600）读取统一入口（进程环境 > 配置文件），
+  供 orchestrator / runner 共用；另提供 `GLAB_BIN` 等外部命令解析（PATH → `~/bin`/`~/.local/bin`）。
+- `ci_orchestrator.py observe`：登记 run（`--mr-iid/--source-sha/--source-branch/--target-branch/
+  --phase3-profile`），只读读一次平台流水线；`--phase3-profile` 的 `jenkins.job` 决定认领哪个芯片。
+- `adopt_gate_build()`：按 `MR_IID/SOURCE_SHA/TARGET_BRANCH` 在
+  `OpenHarmony-V6.1-MR-<chip>` 最近构建里认领 `result=SUCCESS` 的那一个，并用门禁
+  `gate-plan.json`（console 打印 + 归档）交叉核对本次确实构建了该芯片；认领前**重新读 MR
+  head SHA**，不同即 `blocked/stale_source`。
+- `ci_orchestrator.py note`：补上文档里一直引用但缺失的审计事件入口（记录 DUT 选择等决策）。
+- `reconcile --include-terminal/--prune-days N`：默认跳过终结 run，按天归档旧 run 到
+  `runs/archive/`（保留审计），消除旧版每分钟重复处理十几个死 run 的 journal 噪音。
+- `phase3_runner.py`：新增 `resolved_artifact_pattern()` 与通配产物解析
+  （`openharmony_V6.1/out/ota/*.zip` 要求**恰好一个**命中，0/2 命中给出候选清单）；
+  profile 校验新增 `required_parameters` 与 `evidence_parameters` 语义；
+  MR 证据评论新增平台流水线与门禁构建行。
+- `install_systemd_units.py`：`jenkins.env` 模板改为新口径（`JENKINS_BASE_URL=http://192.168.97.54:8080`、
+  `GITLAB_HOST/GITLAB_PROJECT/GLAB_BIN`）；单元显式 `Environment=PATH=~/bin:...`（systemd 最小
+  PATH 找不到 glab）；reconcile 单元带 `--prune-days`；`--with-webhook` 才启用 legacy webhook。
+
+### 修复
+
+- 认领/下载遇到 401/403 时，错误文本改为可操作提示（指出要改 `jenkins.env` 的哪几项），
+  不再只是一段登录页 HTML 截断。
+- `assert_profile_matches` 把产品参数从"硬门禁"改为"期望证据"（门禁不再下发它们），
+  同时新增门禁身份对账：构建参数的 `SOURCE_SHA`/`MR_IID` 必须等于注册值。
+- 产物模式解析修正：旧代码按精确路径取包，门禁归档名可能是 `update.zip` 或
+  `updater_full.zip`，旧实现会直接判失败。
+
+### Profile
+
+- `a333-2g-primary-standby`：`jenkins.job` → `OpenHarmony-V6.1-MR-a333`；
+  `required_parameters=[MR_IID,SOURCE_SHA]`；`Openharmony_Devices`/`XTS_PRODUCT_*` 移入
+  `evidence_parameters`（出现即核对，缺失由设备身份校验兜底）；
+  `artifact.relative_path` → `openharmony_V6.1/out/ota/*.zip`。
+
+### 测试与验证
+
+- python 单测 15 → 38 项：新增平台观察、认领、`stale_source`、芯片不匹配、多包拒绝、
+  gate 构建被清理时的芯片构建兜底、旧自触发 run 的退役收敛、prune/terminal 跳过、以及
+  "代码里不存在构建触发端点"的契约断言；测试用真实 HTTP 假 Jenkins + 假 `glab`
+  （`GLAB_BIN` 指向临时 shim），不联网、不碰设备。
+- 只读实机验证：`observe` 对 MR 226 正确读出 pipeline `410`（`success`）与芯片 `a333`；
+  `reconcile` 对新主机无有效凭据时给出上述可操作错误并落 `blocked`（不静默）。
+- 已知待办：把 `jenkins.env` 换成 97.54 的只读账号/token 后，跑一次真实
+  `observe → reconcile → phase3_runner --dry-run` 取包演练（见 `scripts/ci_route.md` 待办）。
+
 ## [1.1.14] - 2026-10-14
 
 把 `scripts/desktop-reinstall.mjs` 升级为**可反复一键恢复**：desktop profile 在本机被重置过

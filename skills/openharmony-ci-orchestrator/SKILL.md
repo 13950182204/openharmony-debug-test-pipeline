@@ -1,92 +1,96 @@
 ---
 name: openharmony-ci-orchestrator
-description: 为既有 MR 或分支触发并协调 OpenHarmony Jenkins 固件构建，包括 RK3568 与 A333 作业选择、Jenkins crumb 认证、持久完成状态、认证 webhook、定时 reconcile，以及受控的 phase-3 OTA/回归交接。当 OpenHarmony 修复需要 Jenkins 验证、且已批准的板级 profile 可在已登记硬件上执行 OTA 与回归时使用。
+description: 观察并认领平台自带的 OpenHarmony MR 门禁 CI（GitLab 流水线 → Jenkins MR-Gate），取得该次提交已构建的固件/OTA 包，并把它交给受信任的板级 profile 做 OTA 与回归。用于 MR 提交后需要依据平台 CI 结果做自动 OTA 升级与回归验证的场景。本 skill 不触发任何构建。
 ---
 
-# OpenHarmony CI 编排
+# OpenHarmony CI 编排（平台 CI 观察 + 认领）
 
 ## 交付边界
 
-Phase 1 校验目标 Jenkins 作业并入队一次构建。Phase 2 记录真实触发结果，接收或 reconcile 完成状态，核对原始 Jenkins 参数，并在匹配的构建成功后启动一个新的 dsh headless 交接会话。Phase 3 为可选：交接只调用受信任的板级 profile，该 profile 在 OTA 前校验归档包与目标身份。
+**本模块不触发 Jenkins 构建。** MR 提交/更新后，GitLab 为该项目自动创建流水线
+（`openharmony-mr-gate`），该流水线通过专用 Runner 触发并等待 Jenkins 门禁构建
+`OpenHarmony-V6.1-MR-Gate`；门禁再按受影响芯片顺序构建 `OpenHarmony-V6.1-MR-<chip>`
+并归档固件与 OTA 包。我们要做的是：**只读观察这条平台流水线**、在成功后**认领**对应的
+芯片构建、把包交给受信任的 phase-3 profile 做 OTA 与回归。
 
-Phase 1 使用 [scripts/trigger_jenkins_build.py](scripts/trigger_jenkins_build.py)，持久状态与交接使用 [scripts/ci_orchestrator.py](scripts/ci_orchestrator.py)，[scripts/phase3_runner.py](scripts/phase3_runner.py) 只能通过已注册 profile 调用。部署前阅读 [references/phase2-operations.md](references/phase2-operations.md)，已安装的 A333 流程见 [references/phase3-a333.md](references/phase3-a333.md)。
+Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水线 → 成功后按 MR 身份认领芯片构建
+→ 启动受信任的 phase-3 单元。Phase 3 执行 [scripts/phase3_runner.py](scripts/phase3_runner.py)，
+它只接受 `profiles/` 下的受信任 profile。部署与排障见
+[references/phase2-operations.md](references/phase2-operations.md)，A333 板级细节见
+[references/phase3-a333.md](references/phase3-a333.md)。
 
 ## 工作流
 
-1. 确认 MR 源分支，以及可用时的当前源 SHA。不要为未提交或含糊的分支触发构建。
-2. 用 `--dry-run --verify-job` 运行辅助脚本。这执行只读的 Jenkins 作业检查，并验证必需参数存在。
-3. 在用户明确授权启动 Jenkins 后，在环境中设置 `JENKINS_USER` 与 `JENKINS_API_TOKEN`，不带 `--dry-run` 运行辅助脚本。
-4. 把真实触发 JSON 管道给 `ci_orchestrator.py register`，并传入仓库绝对路径。它写入一个锁定的状态文件，包含 queue/build 身份与原始参数集。
-5. 运行 [references/phase2-operations.md](references/phase2-operations.md) 中描述的认证 webhook 接收器与每小时 systemd 定时器。
-6. 接收器与定时器都调用 `reconcile`；它信任 Jenkins API 数据而非回调体，核对所有跟踪参数，然后在 `SUCCESS` 后启动恰好一个 `dsh --profile headless` 会话。
-7. 对已批准的 phase-3 profile，用 `--phase3-profile` 与 `--agent-sandbox danger-full-access` 注册。交接运行固定的 runner，而不是 Jenkins 或 MR 文本里的命令。
+1. 取得 MR 的 **iid、源分支、精确 head SHA 与目标分支**（`glab mr view <iid>` 或 `glab api`）。
+   不要用含糊的分支名代替 SHA。
+2. 注册 run（只读；不产生任何构建）：
 
-## RK3568 调用
+   ```bash
+   python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" observe \
+     --mr-iid <iid> --source-sha <head-sha> --source-branch <source-branch> \
+     --target-branch <target-branch> \
+     --repo-dir <absolute-repository-path> \
+     --phase3-profile a333-2g-primary-standby \
+     --regression-profile <trusted-feature-profile> \
+     --agent-sandbox danger-full-access
+   ```
 
-显式使用已验证的 RK3568 产品参数：
+   `--phase3-profile` 同时决定**认领哪个芯片的构建**（取 `jenkins.job` 里的 `<chip>`）：
+   需要 OTA 验证时必须显式给出。只做观察、不打算 OTA 时可以不传。
+3. 平台流水线跑完（数十分钟到数小时）后推进一次；`reconcile` 也可由 systemd 定时器兜底：
 
-```bash
-export JENKINS_BASE_URL="${JENKINS_BASE_URL:-http://192.168.13.121:8080}"
-export JENKINS_JOB="${JENKINS_JOB:-OpenHarmony-V6.1-RockChip}"
+   ```bash
+   python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
+   ```
 
-python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_build.py" \
-  --branch <mr-source-branch> \
-  --source-sha <mr-source-sha> \
-  --mr-iid <mr-iid> \
-  --build-mode INCREMENTAL \
-  --firmware-type XTS \
-  --parameter Openharmony_Devices=rk3568_dsi_800x1280 \
-  --verify-job \
-  --dry-run
-```
+   `reconcile` 默认只处理未结束的 run（`--include-terminal` 强制全量），可用
+   `--prune-days N` 把终结 run 归档到 `runs/archive/`。
+4. 平台流水线成功 → 认领芯片构建（参数 `MR_IID/SOURCE_SHA/TARGET_BRANCH` 与 run 记录逐项相符，
+   且该构建 `result=SUCCESS`）→ 记录 `build.url` 与归档清单 → 启动 phase-3 systemd 单元。
+5. phase-3 单元执行受信任 runner：核对源 SHA 的 console 检出证据 → 下载 OTA 包 → 包预检 →
+   设备身份与源版本预检 → OTA → 同设备回归 → 回写 MR 评论。
 
-只有审查 JSON 并获得入队授权后，才移除 `--dry-run`。仅当调用方明确需要 Jenkins 在返回前分配构建号时，才使用 `--wait-seconds`。
+## 失败分流（都不触发构建）
+
+| 现场 | 处置 |
+|---|---|
+| 平台流水线 `failed` | run 进入 `gate_failed` 终态；按流水线链接定位失败作业，修复后重提 MR 或重跑平台流水线 |
+| 平台流水线 `canceled/skipped` | `gate_aborted`；目标分支不在门禁白名单时为 `gate_not_in_scope`（**没有固件验证**） |
+| MR 在门禁运行中被更新 | 认领前复核发现 SHA 变化 → `blocked`（`stale_source`）；必须让平台对新提交重跑流水线 |
+| 门禁构建已按保留策略清理 | `blocked`；只能重跑平台流水线，或人工提供已下载的包 |
+| 未受影响芯片 | 门禁按 diff 路由；`gate-plan.json` 的 `chips` 不含本 profile 芯片时拒绝认领并说明 |
+| 新主机凭据未配/失效 | 明确提示 `JENKINS_BASE_URL` 与 `JENKINS_USER/JENKINS_API_TOKEN` 需换成门禁主机的那一对 |
+
+**绝不**在这些情形下回退成自己触发 Jenkins 构建——那会绕过平台门禁的授权与产物一致性。
 
 ## 认证与安全
 
-- Jenkins API token 不要写进文件、提示、日志、JSON 输出或 MR 文本。辅助脚本只从 `JENKINS_API_TOKEN` 读取。
-- 真实 POST 必须同时具备 `JENKINS_USER` 与 `JENKINS_API_TOKEN`。允许匿名的只读作业验证。
-- 仅当 Jenkins 端点有意配置为允许匿名构建请求且其身份已被核查时，才使用 `--allow-anonymous`。这是显式例外，绝不是默认。
-- 可用时使用 Jenkins crumb issuer；不要绕过 CSRF 防护，也不要用 Script Console 做常规构建触发。
-- 作业路径与所有参数值都通过辅助脚本编码。不要用分支或参数输入拼 shell 命令。
-- 把返回的 queue URL 视为不透明标识。Phase 2 在 phase 3 消费产物前核对分配的构建参数。
-- POST 成功只意味着「已入队」，不意味着「已构建」「已打包」「OTA 就绪」或「设备已更新」。
-- **单工作区串行**：同一 Jenkins 作业只有一个工作区/执行器，多个 MR 触发会**排队**串行构建（如 E 排在基准之后），不能并行。POST 返回 queue URL 后，用 queue 项的 `why`/blocked 状态判断是否在被别的构建阻塞；不要假设立即开始。
-
-## 失败处理
-
-作业缺失、被禁用、必需参数缺失、凭据不完整、Jenkins 拒绝请求或参数畸形时，以可操作的错误停止。不要自动重试真实 POST，因为超时可能发生在 Jenkins 已经入队构建之后。
-
-## Phase 2 安全
-
-- 只注册 phase 1 报告 `action: trigger` 的 JSON；`action: dry-run` 会被拒绝。
-- 在认定结果前，把分配的构建提交参数与已注册参数核对。忽略其他作业/构建的 webhook。
-- Jenkins 失败、取消、参数不匹配或 agent 启动失败，都不会启动 OTA 或重试设备动作。
-- 定时器只是兜底。它不入队 Jenkins 构建，也不会在首个 agent 已记录为启动后再次启动 agent。
-- 回调 HMAC 材料与 Jenkins 凭据放在 `0600` 的 systemd 环境文件中，绝不放进运行状态 JSON 或 MR 文本。
-- **交接会话必须能在 reconcile 单元结束后存活**：`openharmony-ci-reconcile.service` 是 `Type=oneshot`，
-  systemd 默认 `KillMode=control-group` 会在单元结束时把 cgroup 内**所有**进程（含已 `start_new_session`
-  的交接 agent）一起杀掉 —— 现象是 agent 秒退且 stdout/stderr 均为 0 字节，构建成功也不会有下一步动作。
-  单元必须设 `KillMode=process`（`install_systemd_units.py` 已生成；旧装机用 drop-in 补
-  `~/.config/systemd/user/openharmony-ci-reconcile.service.d/killmode.conf`）。
-- **交接用的 dsh 必须与当前 runtime 一致**：用 `$DSH_HOME/runtime/<ver>` 下的 dsh（例如
-  `~/.dsh/runtime/dsh-012rc1/node_modules/.bin/dsh`），并让 `DSH_BIN` 指向同一个可执行文件。
-  版本不匹配时 headless profile 会在加载 credentials 插件阶段直接退出（`~/.dsh/.credentials.yaml` 的
-  schema 随版本变化：0.1.2+ 为 `version: 1` + `refs`/`records` 结构，旧 0.1.0 要求扁平 key→string），
-  且报错只在 stderr 出现、agent 日志可能为空。排查方式：用 service 的环境手工跑一次
-  `dsh --profile headless "Reply with exactly: HEADLESS_OK"`，确认返回 `HEADLESS_OK` 再触发交接。
+- 只需要**只读**访问：GitLab 走已登录的 `glab`（token 在 `~/.config/glab-cli/config.yml`
+  或 keyring），Jenkins 只读拿构建参数、consoleText 与归档产物。
+- Jenkins 凭据只从 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）或进程环境读取，
+  不写入 run 状态、日志、MR 文本。
+- 认领是**有据可查**的：`MR_IID/SOURCE_SHA/TARGET_BRANCH` 必须与注册值一致；不一致一律 `blocked`。
+- 平台门禁对同一 MR 只跑一个汇总构建（`disableConcurrentBuilds()`），认领不需要抢锁。
+- 状态文件使用原子替换与进程锁；同一 run 只有一个 phase-3 单元运行（`KillMode=process`、
+  重启上限 3 次）。
 
 ## Phase 3 安全
 
-- profile 是 `profiles/` 下的受信任 JSON 文件；分支名、Jenkins 参数与 MR 文本永远不会提供可执行的设备命令。
-- 已安装的 `a333-2g-primary-standby` profile 只接受 `OpenHarmony-V6.1-AllWinner`、`a333_medical_dsi_800x1280` 及预期的 DHong/76A/DNAKE 产品参数。它只下载归档的 `openharmony_V6.1/out/ota/update.zip`。
-- 其主设备 serial 是 `ea010e325333324247102b4ed1988ce7`；备机 serial 是 `ea010e325333324247102b4ed1a48c99`。仅当主设备升级失败或未能恢复正常 HDC 启动后，才动备机。
-- **OTA 目标选择（用户规定，2026-09-10 起执行）**：OTA 只需选择**当前在线且可升级的 DUT**，不要因为固定串号缺席而卡住——
-  先 `hdc list targets` 枚举在线设备；优先 profile 池内在线设备（primary 优先，其次 standby）；
-  池内无在线设备时，任选一台在线且通过产品身份校验（`const.product.name/model/brand/manufacturer`）
-  与包预检（源版本兼容、`/data` 容量、`write_updater` 可用）的同型号 DUT；
-  把最终选中的 serial 与选择理由写入 CI run 状态（`ci_orchestrator.py note`）与运行日志；
-  离线设备不等待、不反复探测，OTA 完成后在同一台设备上做回归。
-- 每次 OTA 都需要包 ZIP/版本预检、源版本兼容、`/data` 容量、重连后的设备身份、`updater_result=pass` 与 `bootevent.boot.completed=true`。
-- Phase 3 要求已注册的源 SHA，并在下载产物前扫描 Jenkins `consoleText` 中实际的 `HEAD is now at` 检出记录。仅分支的构建证据不足，会被拦截。
-- 内置 OTA 冒烟检查始终运行。没有显式功能回归 profile 的运行报告 `INCONCLUSIVE`，绝不报告功能回归通过。
+- profile 是 `profiles/` 下的受信任 JSON；分支名、门禁参数与 MR 文本永远不会提供可执行的设备命令。
+- 已安装的 `a333-2g-primary-standby` profile 只接受门禁作业 `OpenHarmony-V6.1-MR-a333`，
+  且只下载门禁归档的 `openharmony_V6.1/out/ota/*.zip`（要求恰好一个命中）。
+- 其主设备 serial 是 `ea010e325333324247102b4ed1988ce7`；备机 serial 是
+  `ea010e325333324247102b4ed1a48c99`。仅当主设备升级失败或未能恢复正常 HDC 启动后，才动备机。
+- **OTA 目标选择（用户规定，2026-09-10 起执行）**：OTA 只需选择**当前在线且可升级的 DUT**，
+  不要因为固定串号缺席而卡住——先 `hdc list targets` 枚举在线设备；优先 profile 池内在线设备
+  （primary 优先，其次 standby）；池内无在线设备时，任选一台在线且通过产品身份校验
+  （`const.product.name/model/brand/manufacturer`）与包预检（源版本兼容、`/data` 容量、
+  `write_updater` 可用）的同型号 DUT；把最终选中的 serial 与理由写入 run 状态
+  （`ci_orchestrator.py note --run-id <id> "<理由>"`）与运行日志；离线设备不等待、不反复探测；
+  OTA 完成后在同一台设备上做回归。
+- 每次 OTA 都需要包 ZIP/版本预检、源版本兼容、`/data` 容量、重连后的设备身份、
+  `updater_result=pass` 与 `bootevent.boot.completed=true`。
+- Phase 3 要求已注册的源 SHA，并在下载产物前扫描芯片构建 `consoleText` 中实际的
+  `HEAD is now at <sha>` 检出记录。仅分支的构建证据不足，会被拦截。
+- 内置 OTA 冒烟检查始终运行。没有显式功能回归 profile 的运行报告 `INCONCLUSIVE`，
+  绝不报告功能回归通过。

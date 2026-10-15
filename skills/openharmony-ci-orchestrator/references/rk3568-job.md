@@ -1,28 +1,38 @@
-# RK3568 Jenkins 作业
+# RK3568 平台门禁作业
 
-## 端点
+## 端点（只读）
 
-- Base URL: `http://192.168.13.121:8080`
-- 作业: `OpenHarmony-V6.1-RockChip`
-- 构建端点: `/job/OpenHarmony-V6.1-RockChip/buildWithParameters`
-- 只读元数据端点: `/job/OpenHarmony-V6.1-RockChip/api/json`
+- Base URL: `http://192.168.97.54:8080`（`JENKINS_BASE_URL`）
+- 芯片作业: `OpenHarmony-V6.1-MR-rk3568`
+- 汇总门禁: `OpenHarmony-V6.1-MR-Gate`
+- 只读元数据端点: `/job/<作业名>/api/json`
+- 只读构建端点: `/job/<作业名>/<构建号>/api/json`、`.../consoleText`、`.../artifact/<路径>`
 
-Jenkins 链接中显示的主机名是 `jenkins-chenxin.local:8080`；执行环境中该名字可解析时使用 `JENKINS_BASE_URL`。
+**没有构建触发端点**：本插件不再触发 Jenkins。MR 提交后由 GitLab 流水线
+（`openharmony-mr-gate`）经专用 Runner 触发汇总门禁，门禁再按受影响芯片 `build job:` 出
+`OpenHarmony-V6.1-MR-{rk3568,a333}`。
 
-## Phase-1 必需参数
+## 作业参数
 
-该作业暴露大量产品默认值。触发辅助脚本显式提供以下三个参数，因为它们选择源码与构建模式：
+汇总门禁：`MR_IID`、`SOURCE_SHA`、`TARGET_BRANCH`、`GITLAB_PIPELINE_ID`。
+芯片作业：`MR_IID`、`SOURCE_SHA`、`TARGET_SHA`、`TARGET_BRANCH`。
 
-| 参数 | RK3568 验证值 |
-| --- | --- |
-| `FIRMWARE_BRANCH` | MR 源分支 |
-| `BUILD_MODE` | 默认 `INCREMENTAL`；仅被要求时才用 `FULL` |
-| `FIRMWARE_TYPE` | `XTS` |
+编译侧参数（`BUILD_MODE=INCREMENTAL`、`FIRMWARE_TYPE=NORMAL`、`FIRMWARE_BRANCH=<目标分支>`、
+`Openharmony_Devices=<chip>_dsi_800x1280`）由门禁任务**服务端固定**，不随调用方传入；
+因此认领时只核对 MR 身份四元组，产品身份由设备侧校验与 `evidence_parameters` 承担。
 
-同时为 RK3568 产品传入 `Openharmony_Devices=rk3568_dsi_800x1280`，不要依赖可变的 Jenkins 默认值。
+## 归档产物
 
-## 已知验证记录
+`gate-plan.json`（汇总门禁，含 `mr_iid/source_sha/target_sha/target_branch/merge_base/chips`）、
+`openharmony_V6.1/out/*.img`、`openharmony_V6.1/out/ota/*.img`、`openharmony_V6.1/out/ota/*.zip`。
+保留策略：构建 30 / 产物 10，产物 7 天——**过期的门禁构建无法再取包**，此时必须让平台对新提交
+重跑流水线，而不是自己触发构建。
 
-2026-08-09 的一次只读元数据请求报告 `buildable: true` 且以上四个参数齐全。Jenkins 构建 #46 使用分支 `rk3568/v6.1.0.31_OTA_prefix_change`、`BUILD_MODE=INCREMENTAL`、`FIRMWARE_TYPE=XTS`；构建成功后归档了 `updater_full.zip`。
+## 已知验证记录（旧主机，仅作对照）
 
-不要从这条记录推断未来的构建号。捕获当前触发返回的 queue URL 与分配的构建 URL。
+2026-08-09 的只读元数据请求（旧主机 `192.168.13.121:8080` 的 `OpenHarmony-V6.1-RockChip`）
+报告 `buildable: true` 且 `FIRMWARE_BRANCH`/`BUILD_MODE`/`FIRMWARE_TYPE`/`Openharmony_Devices`
+齐全；构建 #46 归档了 `updater_full.zip`。那台主机**已不再被本插件使用**：
+门禁链路固定在 `192.168.97.54`，凭据、作业名与参数契约都以门禁为准。
+
+不要从这条记录推断未来的构建号或产物名。

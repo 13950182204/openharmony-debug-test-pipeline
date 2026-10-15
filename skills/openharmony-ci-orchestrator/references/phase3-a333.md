@@ -1,10 +1,16 @@
 # Phase 3 A333 2G
 
-首个已安装的 phase-3 profile 是 `a333-2g-primary-standby`。它刻意比 Jenkins AllWinner 作业更窄：
+首个已安装的 phase-3 profile 是 `a333-2g-primary-standby`。它刻意比平台门禁作业更窄：
 
-- 作业：`OpenHarmony-V6.1-AllWinner`。
-- 产品选择器：`Openharmony_Devices=a333_medical_dsi_800x1280`，带 DHong/76A/DNAKE XTS 产品参数。
-- OTA 产物：该构建的精确 `openharmony_V6.1/out/ota/update.zip`；runner 拒绝 `updater_full.zip`、镜像文件、通配符、缺失产物与重复产物。
+- 作业：`OpenHarmony-V6.1-MR-a333`（平台门禁按受影响芯片生成；A333 与 A537 共用 AllWinner 配方）。
+- 必需门禁参数：`MR_IID`、`SOURCE_SHA`（还必须与注册值一致）；目标分支由门禁服务端固定为
+  `v6.1.0.31_release` / `v6.1.0.35_lts` 之一，并由 `TARGET_BRANCH` 复核。
+- 产品参数（`Openharmony_Devices=a333_dsi_800x1280`、`XTS_PRODUCT_*`）由门禁服务端固定、
+  不再作为构建参数下发；profile 把它们放在 `evidence_parameters`：**出现即核对，缺失则由设备身份
+  校验兜底**。
+- OTA 产物：该次门禁构建归档的 `openharmony_V6.1/out/ota/*.zip`，要求**恰好一个命中**
+  （`update.zip` 或 `updater_full.zip` 由板级打包流程决定）；runner 拒绝命中多个、缺失产物
+  与非 OTA 目录下的包。
 - 主设备：`ea010e325333324247102b4ed1988ce7`。
 - 备机：`ea010e325333324247102b4ed1a48c99`。
 
@@ -50,48 +56,46 @@ OTA **只需选择当前在线且可升级的 DUT**，不要因为 profile 里�
 产物路径白名单、身份与版本预检）。放宽的只是"选哪台"这一项，不是校验强度。
 若池内设备长期离线，考虑为其新增一个以在线 DUT 串号入池的 profile（改 profile 属受信任配置变更，需用户确认）。
 
-runner 先把已注册的源 SHA 与 Jenkins 的 `HEAD is now at` console 记录核对。然后使用既有的 `openharmony-ota-upgrade` 预检与常规全量 OTA 投递（`write_updater updater` 后一次 `reboot updater`）。它把包源版本白名单与运行设备核对，捕获产物 SHA-256，验证传输大小，要求同一台设备回归，然后检查 `bootevent.boot.completed`、目标 `softVersion` 与 `updater_result=pass`。
+runner 先把已注册的源 SHA 与芯片构建 console 的 `HEAD is now at` 记录核对（门禁用
+`git checkout --detach <sha>`，输出是短 SHA + 提交标题）。然后使用既有的 `openharmony-ota-upgrade`
+预检与常规全量 OTA 投递（`write_updater updater` 后一次 `reboot updater`）。它把包源版本白名单
+与运行设备核对，捕获产物 SHA-256，验证传输大小，要求同一台设备回归，然后检查
+`bootevent.boot.completed`、目标 `softVersion` 与 `updater_result=pass`。
 
 主设备预检、投递、updater 或重连失败时，记录证据并尝试备机一次。它从不重试主设备，也绝不在主设备成功后升级两台设备。成功升级后的回归失败是固件结果，不是 OTA 故障转移条件。
 
-## 注册 A333 运行
+## 注册 A333 运行（观察平台 CI，不触发构建）
 
-使用精确的源分支、SHA 与 MR iid。profile 会在 Jenkins 完成后再次检查提交的参数。
+使用精确的源分支、SHA 与 MR iid。门禁完成后 profile 会再次核对提交的 MR 身份参数；
+门禁实际构建了哪些芯片由 `gate-plan.json` 交叉核对。
 
 ```bash
-export JENKINS_BASE_URL="http://192.168.13.121:8080"
-export JENKINS_JOB="OpenHarmony-V6.1-AllWinner"
+export JENKINS_BASE_URL="http://192.168.97.54:8080"
 
-python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_build.py" \
-  --branch <mr-source-branch> \
-  --source-sha <mr-source-sha> \
-  --mr-iid <mr-iid> \
-  --build-mode FULL \
-  --firmware-type XTS \
-  --parameter Openharmony_Devices=a333_medical_dsi_800x1280 \
-  --parameter XTS_PRODUCT_NAME=DHong-A333-Development-Board \
-  --parameter XTS_PRODUCT_MODEL=76A \
-  --parameter XTS_PRODUCT_BRAND=DNAKE \
-  --parameter XTS_PRODUCT_MANUFACTURER=DHong \
-  --verify-job \
-| python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" \
-    register --repo-dir <absolute-repository-path> \
-    --phase3-profile a333-2g-primary-standby \
-    --regression-profile <trusted-feature-profile> \
-    --agent-sandbox danger-full-access
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" \
+  observe --mr-iid <mr-iid> \
+  --source-sha <mr-head-sha> \
+  --source-branch <mr-source-branch> \
+  --target-branch v6.1.0.35_lts \
+  --repo-dir <absolute-repository-path> \
+  --phase3-profile a333-2g-primary-standby \
+  --regression-profile <trusted-feature-profile> \
+  --agent-sandbox danger-full-access
 ```
 
-先对已注册的成功运行用 `phase3_runner.py --dry-run` 做一次仅包的排练。它下载并校验精确产物，但不访问 HDC，也不写 GitLab。
+先对已认领的成功运行用 `phase3_runner.py --dry-run` 做一次仅包的排练。它下载并校验精确产物，
+但不访问 HDC，也不写 GitLab。
 
-## 收养已完成的构建
+## 认领已完成的平台构建
 
-`adopt` 仅用于恢复早于 phase-2 注册的成功构建。它不是 phase 1 的替代品：它校验实时 Jenkins 结果与分支参数，拒绝先前跟踪过的构建，并且仍要求 phase 3 在包下载或 OTA 前从 Jenkins console 验证源 SHA。
+`adopt` 用于恢复"平台门禁早已跑完、本插件当时没登记"的场景：它一次性登记并把那次运行认领下来
+（仍逐项核对 `MR_IID/SOURCE_SHA/TARGET_BRANCH`，且仍要求 phase 3 在包下载或 OTA 前从芯片构建
+console 验证源 SHA）。它不是"再触发一次构建"的替代品——本插件不会触发构建。
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" \
-  adopt --base-url http://192.168.13.121:8080 \
-  --job OpenHarmony-V6.1-AllWinner --build-number <number> \
-  --branch <mr-source-branch> --source-sha <mr-source-sha> --mr-iid <iid> \
+  adopt --mr-iid <iid> --source-sha <mr-head-sha> \
+  --target-branch v6.1.0.35_lts \
   --repo-dir <absolute-repository-path> \
   --phase3-profile a333-2g-primary-standby \
   --agent-sandbox danger-full-access

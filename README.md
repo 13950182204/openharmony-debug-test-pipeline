@@ -13,7 +13,7 @@ OpenHarmony「修改-调试-测试」闭环 DSH 插件（运行时插件，bundl
 | `openharmony-test-report-triage` | 测试报告分诊：失败表、源码定位、hilog 证据、根因分类、上游核查 | 「分析这份测试报告」 |
 | `karpathy-guidelines` | 编码行为准则：思考先行、简单优先、外科手术式改动、目标驱动 | 「按 Karpathy 规范修这个问题」 |
 | `glab-mr-submit` | GitLab MR 提交/审查/修复闭环：合规标题、标签、截图上传、六维 subagent 审查 | 「提交这个 MR」 |
-| `openharmony-ci-orchestrator` | Jenkins 构建编排：作业校验、触发、持久状态、webhook/定时交接 | 「触发 Jenkins 构建」 |
+| `openharmony-ci-orchestrator` | 平台 CI 观察与认领：读 GitLab 流水线、认领 Jenkins 门禁构建产物、phase-3 OTA/回归交接（**不触发构建**） | 「认领平台 CI 的构建并做 OTA」 |
 | `openharmony-ota-upgrade` | OTA 升级闭环：预检、hdc 传输、updater、回连验证 | 「OTA 升级到设备」 |
 | `openharmony-debug-loop` | **闭环编排**（本插件新增）：八阶段状态机串联以上模块 | 「跑一遍完整闭环」 |
 
@@ -143,9 +143,12 @@ Settings → 插件配置 中调整。
 ## 使用
 
 - **完整闭环**：对 agent 说「跑一遍完整闭环 + 测试报告路径」，编排 skill 会按状态机推进，
-  每个阶段结束向你汇报并等待授权（触发 Jenkins / 创建 MR / OTA 均为真实动作，必须授权）。
-- **单独一个模块**：直接说「提交这个 MR / 分析这份报告 / 触发 Jenkins / OTA 升级」，
+  每个阶段结束向你汇报并等待授权（创建 MR / OTA 为真实动作，必须授权）。
+- **单独一个模块**：直接说「提交这个 MR / 分析这份报告 / 认领平台 CI 的构建并 OTA / OTA 升级」，
   只加载对应 skill，不影响其他模块。
+- **CI 阶段不触发构建**：MR 提交后 GitLab 平台自带 CI（`openharmony-mr-gate` → Jenkins
+  `OpenHarmony-V6.1-MR-Gate` → `OpenHarmony-V6.1-MR-<芯片>`）自动跑门禁并归档固件/OTA；
+  本插件只**只读观察**并**按 MR 身份认领**那次构建的产物，用于后续自动 OTA 与回归。
 - **流水线状态**：`/pipeline status` 查询当前阶段与产物；`/pipeline reset` 重置。
 
 模型在每个阶段结束时通过 `scripts/pipeline_state.py` 把产物（`set`）、事件（`note`）与
@@ -208,7 +211,7 @@ vendored 后，原 codex skill 的后续更新需要手动同步进本仓库：
 
 ## 边界与安全
 
-- 真实动作（Jenkins 触发、MR 创建、OTA 升级）必须用户授权，dry-run 先行；
+- 真实动作（MR 创建、OTA 升级）必须用户授权，dry-run 先行；**不触发任何 Jenkins 构建**（门禁由平台 CI 驱动，插件只读观察 + 认领）；
 - 设备操作前必须 `hdc list targets` 确认唯一目标；
 - 状态文件损坏时自动备份为 `.bak-<时间戳>` 并重建；
-- Jenkins / GitLab 凭据只从环境变量读取，不写入状态文件或 MR 文本。
+- Jenkins / GitLab 凭据只从 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）或进程环境读取，不写入状态文件或 MR 文本。

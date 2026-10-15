@@ -1,86 +1,119 @@
 # Phase 2 运维
 
-## 状态流
+## 状态流（平台 CI 版）
 
-1. 用 `trigger_jenkins_build.py` 触发 Jenkins 并保存其 JSON 输出。
-2. 用 `ci_orchestrator.py register` 登记该真实触发结果。
-3. 构建结束后 Jenkins 带 HMAC 签名调用 `POST /jenkins`。
-4. webhook 接收器拉取 Jenkins 构建 API，在记录成功或失败前核对所有原始提交的参数。
-5. 匹配的构建成功后启动恰好一个新的 `dsh --profile headless` 会话。Jenkins 无法触达 webhook 接收器时，每小时定时器重复同一 reconcile 路径。
+1. MR 提交/更新 → **平台自动**创建 GitLab 流水线 `openharmony-mr-gate` → 触发并等待
+   Jenkins 门禁 `OpenHarmony-V6.1-MR-Gate` → 顺序构建 `OpenHarmony-V6.1-MR-<chip>`。
+   本插件在这一步**什么都不触发**。
+2. 用 `ci_orchestrator.py observe` 登记 run（MR iid / 精确 head SHA / 目标分支 / profile），
+   同时只读读一次平台流水线状态。
+3. `reconcile`（手动或 systemd 定时器）只读轮询 GitLab：
+   `gate_pending` → （流水线结束）→ `gate_succeeded` / `gate_failed` / `gate_aborted` /
+   `gate_not_in_scope`。
+4. 平台流水线成功 → 认领芯片构建：按 `MR_IID/SOURCE_SHA/TARGET_BRANCH` 在
+   `OpenHarmony-V6.1-MR-<chip>` 最近构建里找到 `result=SUCCESS` 的那一个，
+   并读门禁 `gate-plan.json`/console 确认本次确实构建了该芯片。
+5. 认领成功 → 启动恰好一个受信任 phase-3 systemd 单元（`openharmony-ci-phase3@<run-id>.service`），
+   runner 负责包下载、预检、OTA 与回归。
 
-没有 phase-3 profile 时，agent 交接保持只读。显式命名受信任 phase-3 profile 并使用 `danger-full-access` sandbox 的登记，会在验证构建成功后调用固定的 phase-3 runner。运行状态使用 `queued`、`building`、`build_succeeded`、`build_failed`、`blocked`；phase-3 结果独立存于 `phase3.status`，失败的 OTA 永远不会与 Jenkins 失败混淆。
+认领时以**芯片构建**为硬门禁；汇总门禁构建若已被保留策略清理（或本机无该作业读权限），
+会降级为"仅按芯片构建身份 + console 检出证据认领"，并把原因写进
+`trigger.platform.gate_build_lookup_error` 与 `gate_build_unavailable` 事件（不静默）。
 
-## 登记运行
+状态取值：`gate_pending`、`gate_succeeded`、`gate_failed`、`gate_aborted`、
+`gate_not_in_scope`、`build_succeeded`、`blocked`。phase-3 结果独立存于 `phase3.status`
+（`not_started`/`running`/`passed`/`inconclusive`/`failed`/`dry_run`），
+失败的 OTA 永远不会与门禁失败混淆。
 
-用管道保证只有真实、成功的 phase-1 触发才能创建状态文件：
+## 观察与手工推进
 
 ```bash
-python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/trigger_jenkins_build.py" \
-  --branch <source-branch> --source-sha <source-sha> --mr-iid <iid> \
-  --parameter Openharmony_Devices=rk3568_dsi_800x1280 \
-  --wait-seconds 30 \
-| python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" \
-  register --repo-dir <absolute-repository-path>
+# 注册（只读观察；--phase3-profile 决定认领哪个芯片）
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" observe \
+  --mr-iid <iid> --source-sha <head-sha> \
+  --source-branch <source-branch> --target-branch <target-branch> \
+  --repo-dir <absolute-repository-path> \
+  --phase3-profile a333-2g-primary-standby --agent-sandbox danger-full-access
+
+# 推进（默认跳过已终结的 run；-prune 归档旧 run）
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile --prune-days 14
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile --run-id <run-id>
+
+# 审计事件（例如记录最终选中的 DUT 与理由）
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" note \
+  --run-id <run-id> "selected serial <serial> because ..."
+
+# 恢复：平台构建早已完成时一步登记并认领
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" adopt \
+  --mr-iid <iid> --source-sha <head-sha> --target-branch <target-branch> \
+  --repo-dir <absolute-repository-path> \
+  --phase3-profile a333-2g-primary-standby --agent-sandbox danger-full-access
 ```
 
-真实触发必须有 `JENKINS_USER` 与 `JENKINS_API_TOKEN`。登记命令拒绝 phase-1 dry-run 结果。
+`observe`/`adopt`/`reconcile` 都不产生构建。缺 Jenkins 只读凭据时，认领会以
+`blocked` + 明确的中文提示结束（指出要改 `jenkins.env` 里的哪几项），不会静默降级。
 
-## Webhook 契约
+## 配置
 
-只在 systemd 环境文件中设置 `CI_WEBHOOK_SECRET`。Jenkins 必须发送以下任一形式的 JSON 体：
+`~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）：
 
-```json
-{"job_name":"OpenHarmony-V6.1-RockChip","build_number":46}
+```
+JENKINS_BASE_URL=http://192.168.97.54:8080     # 平台门禁主机
+JENKINS_USER=<门禁主机上的只读账号>
+JENKINS_API_TOKEN=<该账号的 API token>
+GITLAB_HOST=192.168.11.238
+GITLAB_PROJECT=harmony/system/v9611/openharmony_V6.1
+# GLAB_BIN=/home/cx/bin/glab                    # systemd 最小 PATH 之外的兜底
 ```
 
-```json
-{"job":"OpenHarmony-V6.1-RockChip","build":{"number":46}}
-```
-
-添加 `X-CI-Signature: sha256=<hex-hmac-sha256-of-raw-body>`。接收器绝不信任 webhook 声称的结果。它读取 Jenkins 构建 API，在变更状态前校验跟踪的分支与参数。
-
-默认绑定 `127.0.0.1`。要接收远端 Jenkins 回调，绑定明确可达的地址或在前面放反向代理。两种情况下都保持 HMAC 校验开启。
+`JENKINS_TRUSTED_ORIGINS` 只在 Jenkins 返回与访问地址不同的自引用 origin 时才需要设置；
+新门禁主机返回自身 origin，通常留空。
 
 ## 安装兜底定时器
 
-在具备 Jenkins 网络访问、且之后会控制目标 RK3568 的主机上运行一次：
-
-```bash
-python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_units.py"
-```
-
-在 `~/.config/openharmony-ci-orchestrator/jenkins.env` 中填入随机的 `CI_WEBHOOK_SECRET`，需要时填 Jenkins 凭据。然后启用服务与每小时定时器：
+在具备 GitLab 与门禁 Jenkins 网络访问、且会控制目标设备的主机上运行一次：
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_units.py" \
-  --listen-host <reachable-host-or-ip> --enable
+  --reconcile-timer '*:0/5' --prune-days 14 --enable
 ```
 
-用户服务要求机器保持开机。`loginctl enable-linger <user>` 让它在登出后存活；用 `loginctl show-user <user> -p Linger` 验证。
+该命令写入 `openharmony-ci-reconcile.{service,timer}`（含显式 `PATH`，保证 systemd 能找到
+`glab`），并**禁用** legacy 的 `openharmony-ci-webhook.service`（平台信号来自 GitLab；
+单元文件保留便于回滚，需要时用 `--with-webhook` 启用）。用户服务要求机器保持开机；
+`loginctl enable-linger <user>` 让它在登出后存活，用 `loginctl show-user <user> -p Linger` 验证。
 
 ## 检查与恢复
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
-systemctl --user status openharmony-ci-webhook.service openharmony-ci-reconcile.timer
+systemctl --user status openharmony-ci-reconcile.timer
 ls -1 ~/.local/state/openharmony-ci-orchestrator/runs/
+systemctl --user status 'openharmony-ci-phase3@<run-id>.service'
 ```
 
-不要为重试删除生效中的状态文件。先检查它的 `events` 与 Jenkins 构建 URL。失败或阻塞的构建绝不启动跟进 agent。
+不要为重试删除生效中的状态文件；先看它的 `events`、`trigger.platform.pipeline_*`、
+`trigger.platform.gate_build_url` 与 `build.adopt_error`。`blocked`/`gate_failed` 的 run
+绝不会启动 phase-3 单元。终结 run 可用 `--prune-days` 归档到 `runs/archive/`（审计保留）。
 
-状态文件使用原子替换与进程锁。重复 webhook、定时器 tick 或另一个排队运行的 webhook 都无法启动第二个 phase-3 agent。
+## legacy webhook（可选）
+
+`serve` 子命令仍保留（HMAC 校验、校验后拉取 Jenkins 构建 API），但**不再是主路径**：
+平台流水线本身就是要等的结果，`reconcile` 每 5 分钟检查一次即可。若启用它，只在
+systemd 环境文件里设置 `CI_WEBHOOK_SECRET`，并把监听地址配成 Jenkins 可达的地址。
 
 ## Phase 3 登记
 
-只对已审查、且其精确设备池在本机可用的 profile 使用。runner 拒绝所有未指定的包路径与 HDC serial：
+只对已审查、且其精确设备池在本机可用的 profile 使用。runner 拒绝所有未指定的包路径与 HDC serial；
+芯片由 `--phase3-profile` 决定，认领时会与门禁 `gate-plan.json` 的 `chips` 交叉核对：
 
 ```bash
-... trigger_jenkins_build.py <verified A333 arguments> \
-| python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" \
-    register --repo-dir <absolute-repository-path> \
-    --phase3-profile a333-2g-primary-standby \
-    --regression-profile <trusted-feature-profile> \
-    --agent-sandbox danger-full-access
+... ci_orchestrator.py observe --mr-iid <iid> --source-sha <sha> \
+  --target-branch v6.1.0.35_lts --repo-dir <absolute-repository-path> \
+  --phase3-profile a333-2g-primary-standby \
+  --regression-profile <trusted-feature-profile> \
+  --agent-sandbox danger-full-access
 ```
 
-启用该路径前阅读 [phase3-a333.md](phase3-a333.md)。在同一 systemd 环境文件中设置 `GITLAB_HOST` 与 `GITLAB_PROJECT`，以接收幂等的 MR 证据评论。
+启用该路径前阅读 [phase3-a333.md](phase3-a333.md)。在同一 systemd 环境文件中设置
+`GITLAB_HOST` 与 `GITLAB_PROJECT`，以接收幂等的 MR 证据评论。

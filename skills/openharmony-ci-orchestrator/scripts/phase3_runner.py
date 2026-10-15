@@ -19,17 +19,19 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request
 from xml.etree import ElementTree
 
-from ci_orchestrator import (OrchestratorError, add_event, load_json, run_path,
-                             state_directory, state_lock, write_json)
-from trigger_jenkins_build import (JenkinsError, build_http_opener, credentials,
-                                   request_json)
+from ci_orchestrator import (add_event, load_json, run_path, state_directory,
+                             state_lock, write_json)
+from jenkins_api import (JenkinsError, build_http_opener, credentials, request_json)
+from orchestrator_config import CONFIG_ENV
+from orchestrator_config import configured_value as _configured_value
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 PROFILES_DIR = SKILL_DIR / "profiles"
 PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_CAPTURE = 8_000
-CONFIG_ENV = Path.home() / ".config/openharmony-ci-orchestrator/jenkins.env"
+# profile 未声明 artifact.relative_path 时使用的兜底模式（门禁归档的 OTA 目录）。
+DEFAULT_ARTIFACT_PATTERN = "openharmony_V6.1/out/ota/*.zip"
 HDC_LOCAL_WARNING = re.compile(r"\[W\]\[[^\]]+\] FreeChannelContinue handle->data is nullptr")
 
 
@@ -47,17 +49,8 @@ def captured(value: str) -> str:
 
 
 def configured_value(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value:
-        return value
-    try:
-        for line in CONFIG_ENV.read_text(encoding="utf-8").splitlines():
-            if line.startswith(f"{name}="):
-                configured = line.partition("=")[2].strip()
-                return configured or None
-    except FileNotFoundError:
-        pass
-    return None
+    """One setting from the process environment or the private orchestrator config."""
+    return _configured_value(name, CONFIG_ENV)
 
 
 def normalized(value: str) -> str:
@@ -77,6 +70,15 @@ def read_profile(profile_id: str) -> dict[str, Any]:
     if not isinstance(profile, dict) or profile.get("id") != profile_id:
         raise Phase3Error(f"Trusted profile has an invalid id: {path}")
     return profile
+
+
+def resolved_artifact_pattern(profile: dict[str, Any]) -> str:
+    """The OTA artifact pattern this profile accepts (exact path or one-dir glob)."""
+    artifact = profile.get("artifact") or {}
+    pattern = artifact.get("relative_path") or DEFAULT_ARTIFACT_PATTERN
+    if not isinstance(pattern, str) or not pattern:
+        raise Phase3Error("Trusted profile has an invalid artifact.relative_path")
+    return pattern
 
 
 def run_command(
@@ -224,23 +226,63 @@ def target_verified_by_commitid(source_sha: str, snapshot: dict[str, str]) -> bo
 
 
 def assert_profile_matches(profile: dict[str, Any], state: dict[str, Any]) -> None:
+    """核对本次 run 的平台门禁契约。
+
+    门禁作业（`OpenHarmony-V6.1-MR-<chip>`）只声明 MR 身份参数，产品选择（设备/产品名/型号/
+    品牌/厂商）由服务端固定，不再出现在构建参数里。因此：
+    - `required_parameters` 逐项精确匹配（缺省时用 `parameters` 的键，保持既有 profile 语义）；
+    - `parameters` 里其余项作为**期望证据**记录，不阻断——真正的产品身份门禁由设备侧
+      `require_device_identity()` 与包预检承担。
+    """
     trigger = state.get("trigger", {})
     jenkins = profile.get("jenkins", {})
-    if trigger.get("job") != jenkins.get("job"):
+    job = trigger.get("job")
+    if job != jenkins.get("job"):
         raise Phase3Error(
-            f"Profile requires Jenkins job {jenkins.get('job')!r}, got {trigger.get('job')!r}"
+            f"Profile requires Jenkins job {jenkins.get('job')!r}, got {job!r}"
         )
     parameters = trigger.get("parameters")
     if not isinstance(parameters, dict):
         raise Phase3Error("Run state has no verified Jenkins parameters")
-    for name, accepted in jenkins.get("parameters", {}).items():
-        if parameters.get(name) not in accepted:
+    expected = jenkins.get("parameters", {})
+    evidence = jenkins.get("evidence_parameters", {})
+    required_names = jenkins.get("required_parameters")
+    if not isinstance(required_names, list) or not required_names:
+        required_names = list(expected)
+    for name in required_names:
+        actual = parameters.get(name)
+        accepted = expected.get(name)
+        if accepted is None:
+            accepted = evidence.get(name)
+        if actual in (None, ""):
+            raise Phase3Error(f"Profile requires Jenkins parameter {name} to be present")
+        if accepted and actual not in accepted:
             raise Phase3Error(
-                f"Profile rejects Jenkins parameter {name}: {parameters.get(name)!r} not in {accepted!r}"
+                f"Profile rejects Jenkins parameter {name}: {actual!r} not in {accepted!r}"
             )
+    # evidence_parameters 是"期望证据"：新门禁作业由服务端固定产品参数，构建 API 里不再
+    # 一定出现它们；出现时不符要拦（说明作业配方被改过），缺失时交给设备侧身份校验兜底。
+    for name, accepted in evidence.items():
+        actual = parameters.get(name)
+        if actual and accepted and actual not in accepted:
+            raise Phase3Error(
+                f"Profile rejects Jenkins parameter {name}: {actual!r} not in {accepted!r}"
+            )
+    # 门禁身份必须与注册值一致：MR 源 SHA 是后续 console/固件证据的锚点。
+    source_sha = str(trigger.get("source_sha") or "")
+    declared_sha = str(parameters.get("SOURCE_SHA") or "")
+    if declared_sha and declared_sha != source_sha:
+        raise Phase3Error(
+            f"Gate build was made from {declared_sha!r}, run registered {source_sha!r}"
+        )
+    declared_mr = str(parameters.get("MR_IID") or "")
+    if declared_mr and declared_mr != str(trigger.get("mr_iid") or ""):
+        raise Phase3Error(
+            f"Gate build belongs to MR {declared_mr!r}, run registered {trigger.get('mr_iid')!r}"
+        )
     build = state.get("build", {})
     if state.get("status") != "build_succeeded" or build.get("result") != "SUCCESS":
-        raise Phase3Error("Phase 3 requires a successful Jenkins build")
+        raise Phase3Error("Phase 3 requires a successful platform gate build")
     if build.get("verified_parameters") is not True:
         raise Phase3Error("Phase 3 requires Jenkins parameters verified by phase 2")
     if not isinstance(build.get("url"), str):
@@ -318,15 +360,34 @@ def fetch_artifacts(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def artifact_url(state: dict[str, Any], relative_path: str) -> str:
+    """Resolve one archived OTA package to a download URL.
+
+    `relative_path` 可以是精确路径，也可以是受限于同一目录的通配模式（如
+    `openharmony_V6.1/out/ota/*.zip`）——门禁作业既归档 `update.zip` 也归档
+    `updater_full.zip`，具体文件名由板级打包流程决定，因此按模式匹配并要求**恰好一个**命中。
+    """
     if relative_path.startswith("/") or ".." in Path(relative_path).parts:
         raise Phase3Error(f"Unsafe artifact path in trusted profile: {relative_path!r}")
     artifacts = fetch_artifacts(state)
-    matches = [item for item in artifacts if item.get("relativePath") == relative_path]
-    if len(matches) != 1:
-        raise Phase3Error(
-            f"Expected exactly one Jenkins artifact {relative_path!r}, found {len(matches)}"
+    names = sorted(
+        item["relativePath"] for item in artifacts
+        if isinstance(item.get("relativePath"), str)
+    )
+    if "*" in relative_path or "?" in relative_path:
+        pattern = re.compile(
+            "^" + re.escape(relative_path).replace(r"\*", "[^/]*").replace(r"\?", "[^/]") + "$"
         )
-    return f"{state['build']['url'].rstrip('/')}/artifact/{quote(relative_path, safe='/')}"
+        matches = [name for name in names if pattern.match(name)]
+    else:
+        matches = [name for name in names if name == relative_path]
+    if len(matches) != 1:
+        preview = ", ".join(names[:8]) or "none"
+        raise Phase3Error(
+            f"Expected exactly one Jenkins artifact matching {relative_path!r}, "
+            f"found {len(matches)} ({matches!r}); build archives: {preview}"
+        )
+    resolved = matches[0]
+    return f"{state['build']['url'].rstrip('/')}/artifact/{quote(resolved, safe='/')}"
 
 
 def download_artifact(state: dict[str, Any], relative_path: str, destination: Path) -> Path:
@@ -642,12 +703,18 @@ def mr_note_body(state: dict[str, Any]) -> str:
     phase3 = state.get("phase3", {})
     build = state.get("build", {})
     trigger = state.get("trigger", {})
+    platform_state = trigger.get("platform") or {}
     lines = [
         f"<!-- openharmony-ci-phase3:{state['run_id']} -->",
         "### OpenHarmony CI Phase 3",
         f"- Result: `{phase3.get('status', 'unknown')}`",
-        f"- Jenkins: [{trigger.get('job')} #{build.get('number')}]({build.get('url')})",
-        f"- Branch: `{trigger.get('source_branch')}`",
+        f"- Platform pipeline: `{platform_state.get('pipeline_id')}` "
+        f"({platform_state.get('pipeline_status') or platform_state.get('run_state')})"
+        + (f" / gate build [{platform_state.get('gate_build_number')}]"
+           f"({platform_state.get('gate_build_url')})"
+           if platform_state.get("gate_build_url") else ""),
+        f"- Gate build: [{trigger.get('job')} #{build.get('number')}]({build.get('url')})",
+        f"- Branch: `{trigger.get('source_branch')}` -> `{platform_state.get('target_branch')}`",
         f"- Source SHA: `{phase3.get('source_sha', {}).get('verified', trigger.get('source_sha'))}`",
         f"- Profile: `{phase3.get('profile')}`",
     ]
@@ -729,7 +796,9 @@ def main() -> int:
     try:
         assert_profile_matches(profile, state)
         source_sha = verify_source_sha(state)
-        artifact = profile["artifact"]["relative_path"]
+        # 门禁作业归档的是板级打包产物名（可能是 update.zip 或 updater_full.zip）：
+        # profile 用模式声明"取哪个目录下的 OTA 包"，artifact_url 要求恰好命中一个。
+        artifact = resolved_artifact_pattern(profile)
         package = download_artifact(state, artifact, root / "artifacts" / args.run_id / "update.zip")
         preflight = local_preflight(package)
         metadata = package_metadata(package, source_sha.get("package_target_version"))

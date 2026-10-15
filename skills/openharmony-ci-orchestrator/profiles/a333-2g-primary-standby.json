@@ -2,9 +2,20 @@
   "schema_version": 1,
   "id": "a333-2g-primary-standby",
   "jenkins": {
-    "job": "OpenHarmony-V6.1-AllWinner",
+    "job": "OpenHarmony-V6.1-MR-a333",
+    "required_parameters": [
+      "MR_IID",
+      "SOURCE_SHA"
+    ],
     "parameters": {
+      "MR_IID": [],
+      "SOURCE_SHA": [],
+      "TARGET_SHA": [],
+      "TARGET_BRANCH": []
+    },
+    "evidence_parameters": {
       "Openharmony_Devices": [
+        "a333_dsi_800x1280",
         "a333_medical_dsi_800x1280"
       ],
       "XTS_PRODUCT_NAME": [
@@ -22,7 +33,7 @@
     }
   },
   "artifact": {
-    "relative_path": "openharmony_V6.1/out/ota/update.zip",
+    "relative_path": "openharmony_V6.1/out/ota/*.zip",
     "remote_path": "/data/updater/updater_full.zip",
     "mode": "full",
     "source_version_property": "software_version"

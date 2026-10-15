@@ -100,7 +100,7 @@ python3 {{ISSUE_SCRIPT}} bootstrap              # 创建/校验 sweeper 卡片�
    target 分支 = 映射的版本分支(无版本标签则用 branchDefaults);先 --dry-run 再执行;
    创建后按六维并行 subagent 审查,确认的 P0-P2 修复在同一 MR 追加提交并复审。
 5. **ci(构建)**:加载 `openharmony-ci-orchestrator`,--dry-run --verify-job 校验后触发,
-   `ci_orchestrator.py register` 登记;构建完成由 webhook/定时 reconcile 交接或本会话轮询
+   `ci_orchestrator.py observe` 登记(平台 CI 自动构建;本插件只观察与认领,不触发 Jenkins);构建完成由定时 reconcile 交接或本会话轮询
    (**issue 会话即流水线会话:尽量在本会话内等待与继续,避免 headless 交接**,交接只作为
    会话结束后的兜底)。
 6. **ota(升级)**:加载 `openharmony-ota-upgrade`:ota_preflight → `hdc list targets` 确认
@@ -121,7 +121,7 @@ sweeper 下轮按 autoRetry 重试)。
 ## 无人值守纪律
 
 - 本流水线由任务看板自动执行。部署授权策略(danger-full-access、审批关闭)下,真实动作
-  (MR 创建 / Jenkins 触发 / OTA)各阶段**连续执行**,不逐阶段等待人工确认;但保留:
+  (MR 创建 / OTA)各阶段**连续执行**,不逐阶段等待人工确认(CI 门禁由平台自动跑,插件只观察认领);但保留:
   dry-run 先行、`hdc list targets` 唯一设备校验、GitLab 令牌绝不打印/落日志(GitLab API
   凭据由脚本从 `~/.dsh/gitlab-credentials.json` 读取)。
 - 若配置 `requireApproval: true`,每个真实动作前停下,把下步计划写入 issue 评论并告知用户,
