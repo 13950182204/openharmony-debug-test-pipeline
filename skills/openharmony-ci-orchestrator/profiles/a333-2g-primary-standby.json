@@ -36,7 +36,11 @@
     "relative_path": "openharmony_V6.1/out/ota/*.zip",
     "remote_path": "/data/updater/updater_full.zip",
     "mode": "full",
-    "source_version_property": "software_version"
+    "source_version_property": "software_version",
+    "preferred": [
+      "openharmony_V6.1/out/ota/update.zip",
+      "openharmony_V6.1/out/ota/updater_full.zip"
+    ]
   },
   "devices": [
     {

@@ -580,6 +580,7 @@ def create_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "profile": args.phase3_profile,
             "regression_profiles": args.regression_profile,
             "artifact_pattern": profile_artifact_pattern(profile) if profile else None,
+            "dry_run": bool(getattr(args, "dry_run", False)),
             "attempts": [],
         },
         "events": [],
@@ -961,6 +962,11 @@ def add_run_options(parser: argparse.ArgumentParser, *, profile_help: str) -> No
         help="Trusted regression profile to run after OTA; repeat for multiple profiles.",
     )
     parser.add_argument("--timeout-seconds", type=int, default=20)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Rehearsal: hand the claimed build to phase 3 with --dry-run "
+             "(download and validate the OTA package, never touch a device)",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1018,6 +1024,7 @@ def main() -> int:
         print(json.dumps({
             "phase": 2, "action": args.command, "run_id": state["run_id"],
             "status": state["status"], "chip": state["trigger"].get("chip"),
+            "dry_run": bool((state.get("phase3") or {}).get("dry_run")),
             "pipeline_id": (state["trigger"].get("platform") or {}).get("pipeline_id"),
             "gate_build_url": (state["trigger"].get("platform") or {}).get("gate_build_url"),
             "build_url": (state.get("build") or {}).get("url"),

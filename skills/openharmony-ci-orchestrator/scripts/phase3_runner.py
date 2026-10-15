@@ -72,13 +72,22 @@ def read_profile(profile_id: str) -> dict[str, Any]:
     return profile
 
 
-def resolved_artifact_pattern(profile: dict[str, Any]) -> str:
-    """The OTA artifact pattern this profile accepts (exact path or one-dir glob)."""
+def resolved_artifact_patterns(profile: dict[str, Any]) -> list[str]:
+    """Ordered OTA artifact candidates this profile accepts.
+
+    `artifact.preferred` 给有序候选（常用：`update.zip` → `updater_full.zip`），
+    `artifact.relative_path` 作为兜底（通配时要求目录内恰好一个 .zip）。
+    """
     artifact = profile.get("artifact") or {}
-    pattern = artifact.get("relative_path") or DEFAULT_ARTIFACT_PATTERN
-    if not isinstance(pattern, str) or not pattern:
+    candidates: list[str] = []
+    preferred = artifact.get("preferred")
+    if isinstance(preferred, list):
+        candidates.extend(item for item in preferred if isinstance(item, str) and item)
+    fallback = artifact.get("relative_path") or DEFAULT_ARTIFACT_PATTERN
+    if not isinstance(fallback, str) or not fallback:
         raise Phase3Error("Trusted profile has an invalid artifact.relative_path")
-    return pattern
+    candidates.append(fallback)
+    return list(dict.fromkeys(candidates))
 
 
 def run_command(
@@ -359,41 +368,73 @@ def fetch_artifacts(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in artifacts if isinstance(item, dict)]
 
 
+def pattern_matches(names: list[str], pattern: str) -> list[str]:
+    if pattern.startswith("/") or ".." in Path(pattern).parts:
+        raise Phase3Error(f"Unsafe artifact path in trusted profile: {pattern!r}")
+    if "*" in pattern or "?" in pattern:
+        compiled = re.compile(
+            "^" + re.escape(pattern).replace(r"\*", "[^/]*").replace(r"\?", "[^/]") + "$"
+        )
+        return [name for name in names if compiled.match(name)]
+    return [name for name in names if name == pattern]
+
+
+def select_artifact_name(names: list[str], candidates: list[str]) -> str:
+    """Pick exactly one archived OTA package from an ordered candidate list.
+
+    门禁的芯片作业会同时归档 `update.zip` 与 `updater_full.zip`（实测 a333 构建 #31），因此
+    "一个通配匹配全部 .zip" 的老规则必然失败。这里按 profile 声明的**优先顺序**逐个尝试：
+    - 该候选命中恰好一个 → 采用；
+    - 命中多个 → 立刻报错（不猜），并把候选清单打出来；
+    - 命中 0 个 → 试下一个候选；
+    - 全部候选都 0 命中 → 报错并列出该构建实际归档的产物。
+    """
+    attempts: list[str] = []
+    for candidate in candidates:
+        matches = pattern_matches(names, candidate)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise Phase3Error(
+                f"Artifact pattern {candidate!r} matched {len(matches)} archived files "
+                f"({matches!r}); it must resolve to exactly one"
+            )
+        attempts.append(candidate)
+    preview = ", ".join(names[:10]) or "none"
+    raise Phase3Error(
+        f"No archived OTA package matched any of {attempts!r}; build archives: {preview}"
+    )
+
+
 def artifact_url(state: dict[str, Any], relative_path: str) -> str:
     """Resolve one archived OTA package to a download URL.
 
-    `relative_path` 可以是精确路径，也可以是受限于同一目录的通配模式（如
-    `openharmony_V6.1/out/ota/*.zip`）——门禁作业既归档 `update.zip` 也归档
-    `updater_full.zip`，具体文件名由板级打包流程决定，因此按模式匹配并要求**恰好一个**命中。
+    `relative_path` 可以是精确路径，也可以是受限于同一目录的通配模式；多个候选时按顺序尝试
+    （见 `select_artifact_name`）。目录白名单仍由 profile 决定，候选之外的文件一律不取。
     """
-    if relative_path.startswith("/") or ".." in Path(relative_path).parts:
-        raise Phase3Error(f"Unsafe artifact path in trusted profile: {relative_path!r}")
-    artifacts = fetch_artifacts(state)
     names = sorted(
-        item["relativePath"] for item in artifacts
+        item["relativePath"] for item in fetch_artifacts(state)
         if isinstance(item.get("relativePath"), str)
     )
-    if "*" in relative_path or "?" in relative_path:
-        pattern = re.compile(
-            "^" + re.escape(relative_path).replace(r"\*", "[^/]*").replace(r"\?", "[^/]") + "$"
-        )
-        matches = [name for name in names if pattern.match(name)]
-    else:
-        matches = [name for name in names if name == relative_path]
-    if len(matches) != 1:
-        preview = ", ".join(names[:8]) or "none"
-        raise Phase3Error(
-            f"Expected exactly one Jenkins artifact matching {relative_path!r}, "
-            f"found {len(matches)} ({matches!r}); build archives: {preview}"
-        )
-    resolved = matches[0]
+    resolved = select_artifact_name(names, [relative_path])
     return f"{state['build']['url'].rstrip('/')}/artifact/{quote(resolved, safe='/')}"
 
 
-def download_artifact(state: dict[str, Any], relative_path: str, destination: Path) -> Path:
-    url = artifact_url(state, relative_path)
+def download_artifact(state: dict[str, Any], candidates: list[str],
+                      destination: Path) -> tuple[str, Path]:
+    """Download the first candidate that resolves to exactly one archived OTA package.
+
+    Returns (resolved relative path, local file). 解析结果由调用方写进 phase3 状态
+    （本函数里的 state 在 finish_run 重新读盘时会被覆盖，不能在这里落地）。
+    """
+    names = sorted(
+        item["relativePath"] for item in fetch_artifacts(state)
+        if isinstance(item.get("relativePath"), str)
+    )
+    resolved = select_artifact_name(names, candidates)
+    url = f"{state['build']['url'].rstrip('/')}/artifact/{quote(resolved, safe='/')}"
     if destination.is_file() and destination.stat().st_size and zipfile.is_zipfile(destination):
-        return destination
+        return resolved, destination
     request = Request(url, headers={"User-Agent": "openharmony-ci-orchestrator/phase3", **credentials()})
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with build_http_opener().open(request, timeout=120) as response:
@@ -408,7 +449,7 @@ def download_artifact(state: dict[str, Any], relative_path: str, destination: Pa
     os.replace(temp_path, destination)
     if not destination.is_file() or not destination.stat().st_size:
         raise Phase3Error("Downloaded Jenkins OTA artifact is empty")
-    return destination
+    return resolved, destination
 
 
 def local_preflight(package: Path) -> str:
@@ -671,6 +712,9 @@ def claim_run(root: Path, run_id: str, profile_id: str, retry_preflight: bool) -
                     # 执行环境缺/半配 Jenkins 凭据（只有一个变量会被 credentials() 判为异或错误）：
                     # 属纯环境问题且未写设备，修正 EnvironmentFile 后可重试。
                     or "JENKINS_USER and JENKINS_API_TOKEN must be set together" in retry_reason
+                    # 产物候选解析失败（包被换名/门禁归档集合变化）：未写设备，修正候选后可重试。
+                    or "No archived OTA package matched" in retry_reason
+                    or "Expected exactly one Jenkins artifact" in retry_reason
                 )
             ):
                 raise Phase3Error(f"Phase 3 has already been claimed with status {status!r}")
@@ -796,10 +840,11 @@ def main() -> int:
     try:
         assert_profile_matches(profile, state)
         source_sha = verify_source_sha(state)
-        # 门禁作业归档的是板级打包产物名（可能是 update.zip 或 updater_full.zip）：
-        # profile 用模式声明"取哪个目录下的 OTA 包"，artifact_url 要求恰好命中一个。
-        artifact = resolved_artifact_pattern(profile)
-        package = download_artifact(state, artifact, root / "artifacts" / args.run_id / "update.zip")
+        # 门禁芯片作业会同时归档 update.zip 与 updater_full.zip：按 profile 声明的优先顺序
+        # 选第一个恰好命中一个文件的候选（不猜、不做模糊匹配）。
+        candidates = resolved_artifact_patterns(profile)
+        artifact, package = download_artifact(
+            state, candidates, root / "artifacts" / args.run_id / "update.zip")
         preflight = local_preflight(package)
         metadata = package_metadata(package, source_sha.get("package_target_version"))
         sha_line = next((line for line in preflight.splitlines() if line.startswith("[SHA256]")), None)
@@ -816,7 +861,9 @@ def main() -> int:
             "preflight": preflight,
         }
         if args.dry_run:
-            result = finish_run(root, args.run_id, {"status": "dry_run", "finished_at": utc_now(), "source_sha": source_sha, "package": package_state})
+            result = finish_run(root, args.run_id, {
+                "status": "dry_run", "finished_at": utc_now(), "source_sha": source_sha,
+                "artifact_resolved": artifact, "package": package_state})
             print(json.dumps({"phase": 3, "run_id": args.run_id, "status": "dry_run", "state": str(run_path(root, args.run_id))}, ensure_ascii=False))
             return 0
         attempts = []
@@ -832,11 +879,11 @@ def main() -> int:
                 break
         if successful_device is None:
             errors = "; ".join(str(attempt.get("error", "unknown OTA failure")) for attempt in attempts)
-            result = finish_run(root, args.run_id, {"status": "failed", "finished_at": utc_now(), "error": errors, "source_sha": source_sha, "package": package_state, "attempts": attempts})
+            result = finish_run(root, args.run_id, {"status": "failed", "finished_at": utc_now(), "error": errors, "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state, "attempts": attempts})
         else:
             regression = run_regressions(profile, state["phase3"].get("regression_profiles", []), successful_device)
             status = "passed" if regression["status"] == "PASS" else regression["status"].lower()
-            result = finish_run(root, args.run_id, {"status": status, "finished_at": utc_now(), "source_sha": source_sha, "package": package_state, "attempts": attempts, "regression": regression})
+            result = finish_run(root, args.run_id, {"status": status, "finished_at": utc_now(), "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state, "attempts": attempts, "regression": regression})
         result = record_mr_note(root, args.run_id, result)
         print(json.dumps({"phase": 3, "run_id": args.run_id, "status": result["phase3"]["status"], "state": str(run_path(root, args.run_id))}, ensure_ascii=False))
         return 0 if result["phase3"]["status"] in ("passed", "inconclusive") else 2

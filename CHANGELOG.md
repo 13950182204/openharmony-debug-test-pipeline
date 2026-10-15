@@ -49,16 +49,25 @@
 - `ci_orchestrator.py note`：补上文档里一直引用但缺失的审计事件入口（记录 DUT 选择等决策）。
 - `reconcile --include-terminal/--prune-days N`：默认跳过终结 run，按天归档旧 run 到
   `runs/archive/`（保留审计），消除旧版每分钟重复处理十几个死 run 的 journal 噪音。
-- `phase3_runner.py`：新增 `resolved_artifact_pattern()` 与通配产物解析
-  （`openharmony_V6.1/out/ota/*.zip` 要求**恰好一个**命中，0/2 命中给出候选清单）；
-  profile 校验新增 `required_parameters` 与 `evidence_parameters` 语义；
-  MR 证据评论新增平台流水线与门禁构建行。
+- `phase3_runner.py`：新增 `resolved_artifact_patterns()` 与 `select_artifact_name()`：
+  按 profile 的 `artifact.preferred` **有序候选**逐个尝试，每个候选必须恰好命中一个文件
+  （0 命中退下一个候选，>1 命中立刻报错并列出实际归档）；profile 校验新增
+  `required_parameters` 与 `evidence_parameters` 语义；MR 证据评论新增平台流水线与门禁构建行；
+  "产物候选解析失败"纳入可重试原因（未写设备，修正候选后可重试）。
+- `observe` / `adopt --dry-run`：把整条链路登记为**包演练**，由 `phase3_unit_entry.py` 读
+  `phase3.dry_run` 转发给 runner 的 `--dry-run`（下载并校验真包，绝不访问设备）。
 - `install_systemd_units.py`：`jenkins.env` 模板改为新口径（`JENKINS_BASE_URL=http://192.168.97.54:8080`、
   `GITLAB_HOST/GITLAB_PROJECT/GLAB_BIN`）；单元显式 `Environment=PATH=~/bin:...`（systemd 最小
   PATH 找不到 glab）；reconcile 单元带 `--prune-days`；`--with-webhook` 才启用 legacy webhook。
 
-### 修复
+### 修复（其中两条由本轮真实演练暴露）
 
+- **手动 CLI 读不到凭据**：`jenkins.env` 原先只由 systemd 的 `EnvironmentFile=` 注入，
+  人在会话里直接跑 `ci_orchestrator.py` 时 `credentials()` 只读进程环境 → 一律 403。
+  现在凭据按"进程环境 > `jenkins.env`"解析（`configured_value`）。
+- **产物名歧义**：门禁芯片作业同时归档 `update.zip` 与 `updater_full.zip`（实测 a333 #31），
+  原先"通配命中恰好一个"的规则在执行真实取包时必然失败；改为有序候选（`update.zip` 优先，
+  `updater_full.zip` 兜底），任一候选命中多个仍拒绝。
 - 认领/下载遇到 401/403 时，错误文本改为可操作提示（指出要改 `jenkins.env` 的哪几项），
   不再只是一段登录页 HTML 截断。
 - `assert_profile_matches` 把产品参数从"硬门禁"改为"期望证据"（门禁不再下发它们），
@@ -79,10 +88,14 @@
   gate 构建被清理时的芯片构建兜底、旧自触发 run 的退役收敛、prune/terminal 跳过、以及
   "代码里不存在构建触发端点"的契约断言；测试用真实 HTTP 假 Jenkins + 假 `glab`
   （`GLAB_BIN` 指向临时 shim），不联网、不碰设备。
-- 只读实机验证：`observe` 对 MR 226 正确读出 pipeline `410`（`success`）与芯片 `a333`；
-  `reconcile` 对新主机无有效凭据时给出上述可操作错误并落 `blocked`（不静默）。
-- 已知待办：把 `jenkins.env` 换成 97.54 的只读账号/token 后，跑一次真实
-  `observe → reconcile → phase3_runner --dry-run` 取包演练（见 `scripts/ci_route.md` 待办）。
+- **真实取包演练通过**（97.54 只读服务账号已配入 `jenkins.env`）：MR 226 →
+  GitLab pipeline `410`（success）→ 认领汇总门禁 `#50`（SUCCESS，`gate-plan.json` chips
+  `[rk3568, a333]`）→ 认领芯片构建 `OpenHarmony-V6.1-MR-a333 #31`（四参数逐项相符）→
+  下载真实 `openharmony_V6.1/out/ota/update.zip`：**794,042,102 字节**，
+  SHA-256 `fb99a437…ac9a7`，包内目标版本 `OpenHarmony 6.1.0.32`，
+  源版本白名单 `['OpenHarmony 6.1.0.31', '1.3.0']`（**含设备当前 `1.3.0`**，即这台 DUT 现在可升级），
+  console 检出证据 `HEAD is now at a1b2c3d4e5f` ⇒ `source_sha.verified=b0ca72ac95e`；
+  全程无 HDC 动作。
 
 ## [1.1.14] - 2026-10-14
 

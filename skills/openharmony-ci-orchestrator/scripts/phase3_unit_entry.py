@@ -11,6 +11,9 @@
 用法（由 openharmony-ci-phase3@.service 调用）：
     phase3_unit_entry.py <run-id>
 
+状态文件里的 `phase3.dry_run=true`（由 `ci_orchestrator.py observe/adopt --dry-run` 登记）会让
+runner 走 `--dry-run`：只下载并校验 OTA 包，绝不访问设备——用于端到端排练整条链路。
+
 环境变量：
     CI_STATE_DIR                 状态目录，默认 ~/.local/state/openharmony-ci-orchestrator
     CI_PHASE3_RETRY_PREFLIGHT=1  允许 runner 走 --retry-preflight（仅"未写设备"的预检失败可重试）
@@ -64,6 +67,8 @@ def main() -> int:
         "--run-id", run_id,
         "--profile", profile,
     ]
+    if (state.get("phase3") or {}).get("dry_run") is True:
+        argv.append("--dry-run")
     if os.environ.get("CI_PHASE3_RETRY_PREFLIGHT") == "1":
         argv.append("--retry-preflight")
 

@@ -337,22 +337,36 @@ class Phase3RunnerTests(unittest.TestCase):
             evidence = runner.verify_source_sha(state)
         self.assertEqual(evidence["verified"], "a1b2c3d4e5f")
 
-    def test_artifact_pattern_requires_exactly_one_match(self) -> None:
+    def test_artifact_candidates_prefer_update_zip_then_fall_back(self) -> None:
+        """实测现场：芯片构建同时归档 update.zip 与 updater_full.zip，必须按序选中唯一一个。"""
+        candidates = runner.resolved_artifact_patterns(self.profile)
+        self.assertEqual(candidates[0], "openharmony_V6.1/out/ota/update.zip")
+        both = ["openharmony_V6.1/out/ota/update.zip",
+                "openharmony_V6.1/out/ota/updater_full.zip"]
+        self.assertEqual(runner.select_artifact_name(both, candidates),
+                         "openharmony_V6.1/out/ota/update.zip")
+        # update.zip 缺席时退到 updater_full.zip
+        self.assertEqual(runner.select_artifact_name(both[1:], candidates),
+                         "openharmony_V6.1/out/ota/updater_full.zip")
+        # 通配候选命中多个 → 拒绝（不猜）
+        with self.assertRaisesRegex(runner.Phase3Error, "matched 2 archived files"):
+            runner.select_artifact_name(both, ["openharmony_V6.1/out/ota/*.zip"])
+        # 全部候选都不命中 → 报错并列出实际归档
+        with self.assertRaisesRegex(runner.Phase3Error, "No archived OTA package matched"):
+            runner.select_artifact_name(["gate-plan.json"], candidates)
+
+    def test_artifact_url_requires_exactly_one_match_for_a_single_pattern(self) -> None:
         state = {"build": {"url": "http://jenkins/build/51"}}
         single = [{"relativePath": "openharmony_V6.1/out/ota/update.zip"}]
         with mock.patch.object(runner, "fetch_artifacts", return_value=single):
             self.assertTrue(
-                runner.artifact_url(state, "openharmony_V6.1/out/ota/*.zip").endswith(
+                runner.artifact_url(state, "openharmony_V6.1/out/ota/update.zip").endswith(
                     "/artifact/openharmony_V6.1/out/ota/update.zip"
                 )
             )
-        both = single + [{"relativePath": "openharmony_V6.1/out/ota/updater_full.zip"}]
-        with mock.patch.object(runner, "fetch_artifacts", return_value=both):
-            with self.assertRaisesRegex(runner.Phase3Error, "found 2"):
-                runner.artifact_url(state, "openharmony_V6.1/out/ota/*.zip")
         with mock.patch.object(runner, "fetch_artifacts", return_value=[]):
-            with self.assertRaisesRegex(runner.Phase3Error, "found 0"):
-                runner.artifact_url(state, "openharmony_V6.1/out/ota/*.zip")
+            with self.assertRaisesRegex(runner.Phase3Error, "No archived OTA package matched"):
+                runner.artifact_url(state, "openharmony_V6.1/out/ota/update.zip")
 
     def test_package_metadata_requires_source_and_one_target_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -496,8 +510,8 @@ class Phase3RunnerTests(unittest.TestCase):
                     '<updater softVersion="OpenHarmony 6.1.0.32"/>',
                 )
             stub = JenkinsStub(
-                artifacts=["openharmony_V6.1/out/ota/update.zip",
-                           "openharmony_V6.1/out/ota/updater_full.zip"],
+                # 只归档 updater_full.zip：验证候选顺序会退到第二个候选
+                artifacts=["openharmony_V6.1/out/ota/updater_full.zip"],
                 package=package.read_bytes(),
             )
             base_url = stub.start()
@@ -525,16 +539,22 @@ class Phase3RunnerTests(unittest.TestCase):
                         "events": [],
                     },
                 )
-                # 只用模式声明包来源时，两个 .zip 命中会让 runner 明确拒绝而不是猜。
+                # 只归档 updater_full.zip 时按候选顺序退到它，并且必须走 --dry-run。
                 with mock.patch.object(
                     sys, "argv",
                     ["phase3_runner.py", "--state-dir", str(state_root), "--run-id", run_id,
                      "--profile", self.profile["id"], "--dry-run"],
                 ):
-                    self.assertEqual(runner.main(), 2)
+                    self.assertEqual(runner.main(), 0)
                 state = runner.load_json(state_root / "runs" / f"{run_id}.json")
-                self.assertIn("Expected exactly one Jenkins artifact",
-                              state["phase3"]["error"])
+                self.assertEqual(state["phase3"]["status"], "dry_run")
+                self.assertEqual(state["phase3"]["artifact_resolved"],
+                                 "openharmony_V6.1/out/ota/updater_full.zip")
+                self.assertEqual(state["phase3"]["package"]["target_version"],
+                                 "OpenHarmony 6.1.0.32")
+                return
+                state = runner.load_json(state_root / "runs" / f"{run_id}.json")
+                self.assertIn("No archived OTA package matched", state["phase3"]["error"])
             finally:
                 stub.stop()
 
@@ -563,6 +583,7 @@ class OrchestratorTests(unittest.TestCase):
             "phase3_profile": "a333-2g-primary-standby",
             "regression_profile": [],
             "timeout_seconds": 20,
+            "dry_run": False,
             "mode": "observe",
         }
         values.update(overrides)
@@ -717,6 +738,17 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(finished["phase3"]["package"]["target_version"],
                              "OpenHarmony 6.1.0.32")
             self.assertTrue(Path(finished["phase3"]["package"]["path"]).is_file())
+
+    def test_dry_run_handoff_is_recorded_and_forwarded_by_the_unit_entry(self) -> None:
+        """演练模式：observe --dry-run 要落进状态，单元入口据此给 runner 加 --dry-run。"""
+        self.platform.set_mr(status="success")
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            state = orchestrator.create_run(self.root, self.observe_args(dry_run=True))
+        self.assertTrue(state["phase3"]["dry_run"])
+        entry = Path(__file__).resolve().parents[1] / "scripts" / "phase3_unit_entry.py"
+        source = entry.read_text(encoding="utf-8")
+        self.assertIn('(state.get("phase3") or {}).get("dry_run")', source)
+        self.assertIn('argv.append("--dry-run")', source)
 
     def test_reconcile_retires_runs_from_the_removed_self_triggering_flow(self) -> None:
         # 旧时代自触发的 AllWinner/RockChip run 没有 platform 字段：收敛为终态，不再轮询。

@@ -22,6 +22,8 @@ from urllib.parse import quote, urlencode
 from urllib.request import (HTTPCookieProcessor, HTTPRedirectHandler, Request,
                             build_opener)
 
+from orchestrator_config import configured_value
+
 # 平台门禁主机（GitLab Runner bridge 驱动 OpenHarmony-V6.1-MR-Gate 的那一台）。
 DEFAULT_BASE_URL = "http://192.168.97.54:8080"
 SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -49,8 +51,8 @@ def credentials():
     只读读取（构建参数 / 产物下载 / consoleText）在启用鉴权的 Jenkins 上同样需要凭据；
     两个变量必须成对提供，只给一个会得到 Jenkins 的 401 而不是半可用状态。
     """
-    user = os.environ.get("JENKINS_USER")
-    token = os.environ.get("JENKINS_API_TOKEN")
+    user = os.environ.get("JENKINS_USER") or configured_value("JENKINS_USER")
+    token = os.environ.get("JENKINS_API_TOKEN") or configured_value("JENKINS_API_TOKEN")
     if bool(user) != bool(token):
         raise JenkinsError(
             "JENKINS_USER and JENKINS_API_TOKEN must be set together"

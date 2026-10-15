@@ -76,11 +76,19 @@ token 消耗点唯一：阶段推进时由模型调用一次 `reconcile`（或�
 5. **systemd 最小 PATH**：单元现在显式带 `Environment=PATH=<~/bin>:...`，否则 `glab`
    找不到；也可用 `GLAB_BIN` 指定绝对路径。
 
-## 5. 待办/记录
+## 5. 实测记录与待办
 
-- [ ] 在 `jenkins.env` 里换成 97.54 的只读账号/token 后，跑一次真实 MR 的
-      `observe → reconcile → phase3_runner --dry-run`，确认能下载到门禁包（当前只到
-      "凭据被拒 + 可操作提示"这一步）。
+- [x] **真实取包演练通过（2026-10-15）**：97.54 只读服务账号（AC）配入 `jenkins.env` 后，
+      MR 226 → pipeline 410(success) → 汇总门禁 #50(SUCCESS, chips=[rk3568,a333]) →
+      认领 `OpenHarmony-V6.1-MR-a333` #31 → 下载真实
+      `openharmony_V6.1/out/ota/update.zip`（794,042,102 字节，
+      SHA-256 `fb99a437…ac9a7`，包内目标 `OpenHarmony 6.1.0.32`，源版本白名单
+      `['OpenHarmony 6.1.0.31','1.3.0']`）。演练用 `--dry-run`，零 HDC 动作。
+- [x] 演练暴露并修掉两个真缺陷：①会话里直接跑脚本读不到 `jenkins.env` 凭据（一律 403）；
+      ②芯片构建同时归档 `update.zip` + `updater_full.zip`，单通配模式必然歧义。
+- [ ] 首次真机 OTA 前确认设备在线与 `/data` 余量（预检要求 ≥ 886 MiB）。
+
+## 6. 其他待办
+
 - [ ] `OpenHarmony-V6.1-MR-a537` 作业已被生成，但门禁路由表只产出 rk3568/a333；
       若将来接入 A537，需要新增对应 profile 与设备池。
-- [ ] XTS-only 变更的回测路线（不 OTA）：门禁目前只保证固件/OTA 非空，回测仍需独立 runner 动作。

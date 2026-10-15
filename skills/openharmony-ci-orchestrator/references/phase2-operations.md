@@ -53,6 +53,28 @@ python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" 
 `observe`/`adopt`/`reconcile` 都不产生构建。缺 Jenkins 只读凭据时，认领会以
 `blocked` + 明确的中文提示结束（指出要改 `jenkins.env` 里的哪几项），不会静默降级。
 
+## 端到端包演练（不写设备）
+
+换新主机、换 profile 或第一次接入某个芯片时，先跑一次演练：认领平台构建并下载校验真包，
+但绝不访问 HDC / 写设备。
+
+```bash
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" observe \
+  --mr-iid <iid> --source-sha <head-sha> --target-branch <target-branch> \
+  --repo-dir <absolute-repository-path> \
+  --phase3-profile a333-2g-primary-standby --agent-sandbox danger-full-access \
+  --dry-run
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
+```
+
+`--dry-run` 落进状态的 `phase3.dry_run`，由 `phase3_unit_entry.py` 转发给 runner；结束后
+run 的 `phase3.status=dry_run`，`phase3.package` 里有解析到的产物名、字节数、SHA-256、
+包内目标版本与源版本白名单。手工跑单元入口时记得给它 `CI_STATE_DIR`（默认指向生产状态目录）：
+
+```bash
+CI_STATE_DIR=<state-dir> python3 ".../scripts/phase3_unit_entry.py" <run-id>
+```
+
 ## 配置
 
 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）：
