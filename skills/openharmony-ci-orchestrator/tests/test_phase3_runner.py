@@ -514,6 +514,23 @@ class Phase3RunnerTests(unittest.TestCase):
         self.assertTrue(runner.target_verified_by_commitid(GATE_SHA, snapshot))
         self.assertFalse(runner.target_verified_by_commitid("0" * 40, snapshot))
 
+    def test_inconclusive_declared_regression_is_not_reported_as_pass(self) -> None:
+        """实测缺陷：重跑返回 INCONCLUSIVE（压根没跑成），整轮回归却报 PASS = 谎报通过。"""
+        snapshot = {"boot_completed": "true\n", "product_name": "x\n", "product_model": "y\n",
+                    "device_tree_model": "z\n", "software_version": "v\n", "ohos_fullname": "f\n",
+                    "free_kib_line": "", "write_updater": "/bin/write_updater\n"}
+        inconclusive = {"id": "xts-rerun-dcts-lts-f", "status": "INCONCLUSIVE",
+                        "evidence": {"error": "no module to rerun"}}
+        with mock.patch.object(runner, "device_snapshot", return_value=snapshot), \
+                mock.patch.object(runner, "collect_updater_evidence", return_value="|pass|"), \
+                mock.patch.object(runner, "read_profile",
+                                  side_effect=lambda pid: {"id": pid, "boards": [self.profile["id"]],
+                                                           "kind": "xts-rerun"}), \
+                mock.patch.object(runner, "run_xts_rerun", return_value=inconclusive):
+            result = runner.run_regressions(self.profile, ["xts-rerun-dcts-lts-f"],
+                                            self.profile["devices"][0])
+        self.assertEqual(result["status"], "INCONCLUSIVE")
+
     def test_smoke_only_is_inconclusive(self) -> None:
         snapshot = {
             "boot_completed": "true\n",
@@ -1104,6 +1121,40 @@ class OrchestratorTests(unittest.TestCase):
         source = entry.read_text(encoding="utf-8")
         self.assertIn('(state.get("phase3") or {}).get("dry_run")', source)
         self.assertIn('argv.append("--dry-run")', source)
+
+    def test_observe_carries_the_triage_failure_list_into_the_run_state(self) -> None:
+        """交接是两跳：triage → pipeline-state.json → run 状态 → phase-3 runner。
+
+        实测缺陷：中间那跳缺失时，分诊写好的 failedModules 永远到不了回归阶段，
+        重跑以"无模块"结束（还被误报成 PASS）。
+        """
+        pipeline_state = self.root / "pipeline-state.json"
+        pipeline_state.write_text(json.dumps({
+            "schemaVersion": 1,
+            "artifacts": {
+                "failedModules": ["DctsDmsFaTest"],
+                "modules": {"DctsDmsFwkStagePermissionTest": {"tests": 74, "failed": 2}},
+            },
+        }), encoding="utf-8")
+        self.platform.set_mr(status="running")
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            state = orchestrator.create_run(
+                self.root, self.observe_args(pipeline_state=str(pipeline_state),
+                                             run_id="ci-handoff"))
+        self.assertEqual(state["phase3"]["failed_modules"],
+                         ["DctsDmsFaTest", "DctsDmsFwkStagePermissionTest"])
+        # 回归阶段据此取到重跑目标
+        self.assertEqual(runner.modules_to_rerun({}, state),
+                         ["DctsDmsFaTest", "DctsDmsFwkStagePermissionTest"])
+
+    def test_missing_pipeline_state_does_not_break_registration(self) -> None:
+        self.platform.set_mr(status="running")
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            state = orchestrator.create_run(
+                self.root, self.observe_args(pipeline_state=str(self.root / "nope.json"),
+                                             run_id="ci-nostate"))
+        self.assertEqual(state["phase3"]["failed_modules"], [])
+        self.assertEqual(state["status"], "gate_pending")
 
     def test_reconcile_retires_runs_from_the_removed_self_triggering_flow(self) -> None:
         # 旧时代自触发的 AllWinner/RockChip run 没有 platform 字段：收敛为终态，不再轮询。

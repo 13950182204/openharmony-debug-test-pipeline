@@ -2,6 +2,37 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.5] - 2026-10-16
+
+**真闭环暴露并修掉两个缺陷**（契约从"写下来"到"真的接通"）。
+
+### 修复
+
+- **交接只接了一半（致命）**：`failedModules` 写在 `pipeline-state.json`，而 phase-3 runner
+  读的是 **run 状态文件**——两者不同文件。实测：分诊按契约写好了清单，回归仍以"无模块"结束。
+  现在 `ci_orchestrator.py observe` 会把分诊清单搬进 run 状态（`phase3.failed_modules`），
+  runner 优先读它，其次才退回 `artifacts.*`。
+- **结论聚合谎报通过**：显式登记的回归项返回 `INCONCLUSIVE`（没跑成）时，整轮回归仍报 `PASS`。
+  实测于 dcts 重跑（0/0 unavailable）时复现。现已改为：**显式回归项 INCONCLUSIVE ⇒ 整轮 INCONCLUSIVE**。
+
+### 真机验证（acts-LTS-f / A333）
+
+| 环节 | 结果 |
+| --- | --- |
+| 分诊按契约写入 | `pipeline_state.py set triage` 无错无警 |
+| 观察搬移 | run 状态 `phase3.failed_modules = ['ActsAACommandPrintSyncTest']` |
+| 重跑执行 | xdevice(Windows 侧) → 报告落 `D:\ohos\XTS6.1\office\acts-LTS-f\reports\ci\<时间戳>` |
+| 判定 | `total=16 passed=16 failed=0` → **PASS** |
+
+### 未定位（如实记录，待查）
+
+- **`dcts-LTS-f` 重跑在本机始终 `unavailable`（0 台设备）**，而同一设备、同一宿主下
+  `acts-LTS-f` 稳定通过（8/8）。xdevice 日志显示 hdc 已列出两台 USB 设备，但在设备分配处
+  `applied 0 / required 1`。怀疑与 **WSL interop 抖动**同源（见下条），待单独排查。
+- **WSL interop 抖动**：在 systemd 单元上下文里 `hdc` 曾报
+  `WSL ERROR: UtilAcceptVsock:281: accept4 failed 110`，同一时刻交互 shell 下 hdc 8/8 正常。
+  抖动期内任何设备访问（含门禁包认领后的 OTA）都会直接失败——这是当前**最可能的自动化中断源**。
+
 ## [1.2.4] - 2026-10-16
 
 **补齐「分诊 → 回归」的交接契约**（自动化闭环此前断在产物交接层）。

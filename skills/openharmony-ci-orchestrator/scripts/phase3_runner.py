@@ -730,6 +730,11 @@ def modules_to_rerun(regression: dict[str, Any], run_state: dict[str, Any] | Non
     explicit = regression.get("modules")
     if isinstance(explicit, list) and explicit:
         return [str(item).strip() for item in explicit if str(item).strip()]
+    phase3 = (run_state or {}).get("phase3") or {}
+    registered = phase3.get("failed_modules")
+    if isinstance(registered, list) and registered:
+        # 观察阶段从流水线状态搬进来的分诊失败项（交接链路的第二跳）。
+        return [str(item).strip() for item in registered if str(item).strip()]
     artifacts = ((run_state or {}).get("artifacts") or {})
     names: list[str] = []
     listed = artifacts.get("failedModules")
@@ -922,6 +927,10 @@ def run_regressions(profile: dict[str, Any], regression_ids: list[str], device: 
     if any(result["status"] == "FAIL" for result in results):
         status = "FAIL"
     elif not declared:
+        status = "INCONCLUSIVE"
+    elif any(result["status"] == "INCONCLUSIVE" for result in declared):
+        # 显式登记的回归项没跑成（没有模块/缺报告/模块 unavailable）**不能算通过**。
+        # 实测缺陷：重跑返回 INCONCLUSIVE 时整轮仍报 PASS，等于谎报功能回归通过。
         status = "INCONCLUSIVE"
     else:
         status = "PASS"

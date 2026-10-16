@@ -190,6 +190,37 @@ def jenkins_base_url(explicit: str | None = None) -> str:
     return safe_url(explicit or configured_value("JENKINS_BASE_URL") or DEFAULT_BASE_URL)
 
 
+def pipeline_artifact_modules(pipeline_state: Path | None = None) -> list[str]:
+    """Read the triage-declared failure list from the pipeline state file.
+
+    交接链路是两跳：triage → `pipeline-state.json`（模型写）→ run 状态（本模块写）→
+    phase-3 runner（读 run 状态）。**中间这一跳原先缺失**：runner 只读 run 状态，于是
+    分诊写好的 `failedModules` 永远到不了回归阶段（实测：真实闭环里重跑以"无模块"结束）。
+    """
+    if pipeline_state is None:
+        configured = configured_value("DSH_PIPELINE_STATE_FILE")
+        pipeline_state = Path(configured).expanduser() if configured else Path.home() / ".dsh/pipeline-state.json"
+    try:
+        payload = json.loads(pipeline_state.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), dict) else {}
+    modules: list[str] = []
+    for item in (artifacts.get("failedModules") or []):
+        if isinstance(item, str) and item.strip():
+            modules.append(item.strip())
+    fallback = artifacts.get("modules")
+    if isinstance(fallback, dict):
+        modules.extend(str(name) for name in fallback)
+    resolved: list[str] = []
+    for name in modules:
+        if name not in resolved:
+            resolved.append(name)
+    return resolved
+
+
 def profile_record(profile_id: str | None) -> dict[str, Any]:
     """Read one trusted profile's contract (Jenkins job/chip/artifact pattern)."""
     if not profile_id:
@@ -622,6 +653,10 @@ def create_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "regression_profiles": args.regression_profile,
             "artifact_pattern": profile_artifact_pattern(profile) if profile else None,
             "dry_run": bool(getattr(args, "dry_run", False)),
+            # 把分诊声明的失败测试项带进来，让 phase-3 runner 能在设备上重跑它们。
+            "failed_modules": pipeline_artifact_modules(
+                Path(args.pipeline_state).expanduser() if getattr(args, "pipeline_state", None) else None
+            ),
             "attempts": [],
         },
         "events": [],

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "xts-rerun-dcts-lts-f",
+  "boards": [
+    "a333-2g-primary-standby"
+  ],
+  "kind": "xts-rerun",
+  "description": "OTA 成功后用本地 DCTS LTS 运行器重跑分诊报告里出错的测试项（模块级）；全部用例通过才 PASS。",
+  "runner_dir": "/mnt/d/ohos/XTS6.1/office/dcts-LTS-f",
+  "action": "run",
+  "task": "dcts",
+  "config": "config/user_config.xml",
+  "runner_host": "windows",
+  "windows_python": "C:\\Users\\super_JunieR\\AppData\\Local\\Programs\\Python\\Python38\\python.exe",
+  "session_root": "/mnt/d/ohos/XTS6.1/office/dcts-LTS-f/reports/ci",
+  "timeout_seconds": 5400,
+  "notes": [
+    "modules 留空时取流水线状态 artifacts.failedModules（或 modules 的键）。",
+    "模块名必须是运行器 testcases/*.json 的名字；报告里的 <testsuite name> 是测试类名，不是模块名。",
+    "runner_host=windows：xdevice 连 hdc 服务的限制见 docs/操作手册.md 5.5。",
+    "判定只看报告：全通过 PASS / 任一失败 FAIL / unavailable 或零记录 INCONCLUSIVE。"
+  ]
+}
