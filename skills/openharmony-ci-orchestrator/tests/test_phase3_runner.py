@@ -781,6 +781,32 @@ class XtsRerunTests(unittest.TestCase):
                          ["ActsUdmfTest", "ActsBmsTest", "ActsIgnoredTest"])
         self.assertEqual(runner.modules_to_rerun({}, {"artifacts": {}}), [])
 
+    def test_unknown_module_names_are_caught_before_running(self) -> None:
+        """消费方命名空间校验：`-l` 只认运行器 testcases/*.json 的模块名。
+
+        真实误用现场：把报告里的**测试类名**（`DmsFwkFaTest`）当成模块名（`DctsDmsFaTest`）。
+        这类错误以前只能等 xdevice 跑完才暴露（甚至表现为 unavailable），现在执行前就拦下，
+        并把消费方能用的模块名样例摆出来。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            runner_dir = Path(directory) / "dcts-LTS-f"
+            (runner_dir / "testcases").mkdir(parents=True)
+            (runner_dir / "config").mkdir()
+            (runner_dir / "config" / "user_config.xml").write_text("<user_config/>", encoding="utf-8")
+            for name in ("DctsDmsFaTest", "DctsDmsFwkStageTest"):
+                (runner_dir / "testcases" / f"{name}.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(test_harness.available_modules(runner_dir),
+                             {"DctsDmsFaTest", "DctsDmsFwkStageTest"})
+            self.assertEqual(test_harness.unknown_modules(runner_dir, ["DctsDmsFaTest"]), [])
+            self.assertEqual(test_harness.unknown_modules(runner_dir, ["DmsFwkFaTest"]),
+                             ["DmsFwkFaTest"])
+            result = runner.run_xts_rerun(
+                {"id": "x", "kind": "xts-rerun", "runner_dir": str(runner_dir),
+                 "modules": ["DmsFwkFaTest"]}, "SN", {"artifacts": {}})
+            self.assertEqual(result["status"], "INCONCLUSIVE")
+            self.assertIn("not present in the local runner", result["evidence"]["error"])
+            self.assertIn("DctsDmsFaTest", result["evidence"]["known_modules_sample"])
+
     def test_module_name_derived_from_a_case_id(self) -> None:
         self.assertEqual(test_harness.module_name_from_case("ActsUdmfTest#case_0100"),
                          "ActsUdmfTest")

@@ -289,6 +289,26 @@ def verdict(report_dir: Path, modules: list[str]) -> dict[str, Any]:
     }
 
 
+def available_modules(runner_dir: Path) -> set[str]:
+    """Module names the local runner can actually run (one `*.json` descriptor per module).
+
+    这个集合是**消费方命名空间**的权威：xdevice `-l` 只认这些名字（通常是 HAP 模块名，
+    如 `ActsUdmfTest`/`DctsDmsFaTest`），而报告里 `<testsuite name>` 是**测试类名**
+    （如 `DmsFwkFaTest`/`dmsJsUnitTest`）。两者长得像但不是一回事，写混了只能等执行时报错。
+    """
+    testcases = runner_dir / "testcases"
+    if not testcases.is_dir():
+        return set()
+    return {path.stem for path in testcases.glob("*.json") if path.is_file()}
+
+
+def unknown_modules(runner_dir: Path, modules: list[str]) -> list[str]:
+    known = available_modules(runner_dir)
+    if not known:
+        return []  # 无法校验时不拦，交由执行阶段报错
+    return [name for name in modules if name not in known]
+
+
 def module_name_from_case(case: str) -> str:
     """Derive a module/test-item name from a triage case id.
 

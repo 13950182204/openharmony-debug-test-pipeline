@@ -822,6 +822,20 @@ def run_xts_rerun(regression: dict[str, Any], serial: str,
         }
         return entry
     # 报告目录默认放在运行器目录下：Windows 侧执行时两端口径都能看到同一份报告。
+    unknown = test_harness.unknown_modules(runner_dir, modules)
+    if unknown:
+        known = sorted(test_harness.available_modules(runner_dir))
+        entry["status"] = "INCONCLUSIVE"
+        entry["evidence"] = {
+            "error": f"module name(s) not present in the local runner: {unknown}",
+            # 直接把消费方命名空间的真实样例摆出来：xdevice `-l` 只认这些名字（运行器
+            # testcases/*.json 的模块名），不是报告里的测试类名。
+            "known_modules_sample": known[:12],
+            "known_modules_total": len(known),
+            "hint": "xdevice `-l` 只认运行器 testcases/*.json 的模块名（HAP 模块名，如 "
+                    f"{known[0] if known else 'ActsXxxTest'}），报告里的测试类名不是模块名",
+        }
+        return entry
     session_root = Path(str(regression.get("session_root") or (runner_dir / "reports" / "ci")))
     try:
         report_dir = session_root / time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
