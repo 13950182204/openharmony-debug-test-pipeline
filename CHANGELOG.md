@@ -2,6 +2,43 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.4] - 2026-10-16
+
+**补齐「分诊 → 回归」的交接契约**（自动化闭环此前断在产物交接层）。
+
+### 背景（真实数据）
+
+`~/.dsh/pipeline-state.json` 是分诊与回归之间唯一的交接物，但它的字段从来没有定义：
+
+| 交接物 | 写入方（triage）实际写的 | 读取方（回归）实际需要的 |
+| --- | --- | --- |
+| `failedCases` | `3`（**数量**） | `["模块#用例", …]`（**清单**） |
+| `failedModules` | 没有这个概念 | `["DctsDmsFaTest", …]`（xdevice 模块名） |
+| `triageSummary`（skill 正文承诺的字段） | — | **代码里零消费者**（与真实字段名不一致） |
+
+且两端"模块"属于不同命名空间：报告 `result/<X>.xml` 的 `<X>` 是 xdevice `-l` 认的**模块名**，
+而 `<testsuite name>` 是**测试类名**（如 `DmsFwkFaTest`）——长得像，写混了只能等运行期暴露。
+
+### 新增
+
+- **triage SKILL 增「产出（硬约定）」**：固定 `failedModules` / `failedCases` / `modules` 三个
+  字段的名字、形状与命名空间来源，含"先 `ls <运行器>/testcases/*.json` 自检模块名"的步骤。
+- **`pipeline_state.py` 形状校验**：`set triage` 时校验——
+  `failedCases` 必须是 `["模块#用例"]` 清单（数量会被拒绝并提示写 `modules.<模块>.failed`）；
+  `failedModules`/`modules` 的键必须是合法模块名；小写驼峰名（如 `dmsJsUnitTest`）判为"疑似测试类名"
+  给警告；两者都没写时警告"回归将没有可重跑目标"。错误阻塞写入，警告放行。
+- **`{{PIPELINE_STATE_FILE}}` 占位符**：`buildSkillContent` 新增该替换，vendored skill 正文里
+  的状态文件路径按**模型口径**渲染（此前只有 `{{PIPELINE_SCRIPT}}`，新占位符会残留字面量）。
+- **编排 skill 的 triage 描述与真实字段对齐**：`triageSummary` 退役，改为写
+  `failedModules / failedCases / modules`，并注明回归阶段按此消费。
+
+### 测试
+
+- 新增 `scripts/tests/test_pipeline_state.py`（10 项）并接入 `pnpm run test:python`：覆盖数量误写、
+  用例缺少 `#`、非法模块名、`modules` 形状、类名告警、缺字段告警，以及两条端到端保证——
+  **写入方产出的形状能被 `modules_to_rerun` 完整消费**、**坏形状必须拒绝且不落盘**。
+- vitest 新增 `{{PIPELINE_STATE_FILE}}` 替换断言（43 → 44 项）。
+
 ## [1.2.3] - 2026-10-15
 
 **回归阶段：OTA 成功后重跑测试用例（用户口径）已打通并真机验证。**

@@ -1,6 +1,6 @@
 {
   "name": "openharmony-debug-test-pipeline",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "OpenHarmony 修改-调试-测试闭环 DSH 插件：聚合分诊/修复/MR/平台CI/OTA/回归六个 skill 模块与八阶段编排，各模块可独立调用（CI 阶段只观察认领平台门禁构建，不触发 Jenkins）",
   "type": "module",
   "main": "lib/index.js",
@@ -47,7 +47,7 @@
     "build": "rm -rf lib && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:python": "python3 test/tools/undefined_names.py && python3 -m unittest discover -s skills/openharmony-ci-orchestrator/tests -v && python3 -m unittest discover -s skills/glab-mr-submit/tests -v",
+    "test:python": "python3 test/tools/undefined_names.py && python3 -m unittest discover -s scripts/tests -v && python3 -m unittest discover -s skills/openharmony-ci-orchestrator/tests -v && python3 -m unittest discover -s skills/glab-mr-submit/tests -v",
     "prepublishOnly": "pnpm run build && pnpm test && pnpm run test:python",
     "check:names": "python3 test/tools/undefined_names.py"
   },

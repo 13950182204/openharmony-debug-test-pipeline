@@ -58,6 +58,7 @@ describe('buildSkillContent', () => {
       'python3 "{{SKILLS_DIR}}/openharmony-ota-upgrade/scripts/ota_preflight.sh"\npython3 {{PIPELINE_SCRIPT}} status\n',
       '/opt/pkg/skills',
       '/opt/pkg/scripts/pipeline_state.py',
+      '/home/cx/.dsh/pipeline-state.json',
     )
     expect(out).toContain('/opt/pkg/skills/openharmony-ota-upgrade/scripts/ota_preflight.sh')
     expect(out).toContain('/opt/pkg/scripts/pipeline_state.py status')
@@ -65,6 +66,18 @@ describe('buildSkillContent', () => {
     expect(out).toContain('技能目录: /opt/pkg/skills')
     expect(out).not.toContain('{{SKILLS_DIR}}')
     expect(out).not.toContain('{{PIPELINE_SCRIPT}}')
+  })
+
+  it('替换 {{PIPELINE_STATE_FILE}}（分诊写产物的交接路径）', () => {
+    // 回归阶段按状态文件里的 failedModules 重跑测试项，因此 triage 正文必须拿到**模型口径**路径。
+    const out = buildSkillContent(
+      'python3 "{{PIPELINE_SCRIPT}}" set triage ... --file "{{PIPELINE_STATE_FILE}}"\n',
+      '/opt/pkg/skills',
+      '/opt/pkg/scripts/pipeline_state.py',
+      '/home/cx/.dsh/pipeline-state.json',
+    )
+    expect(out).toContain('--file "/home/cx/.dsh/pipeline-state.json"')
+    expect(out).not.toContain('{{PIPELINE_STATE_FILE}}')
   })
 })
 

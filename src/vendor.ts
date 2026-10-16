@@ -67,11 +67,14 @@ export function parseSkillFrontmatter(raw: string): ParsedSkill | undefined {
  * @param raw - SKILL.md 原始内容
  * @param skillsDir - 插件包 skills/ 目录绝对路径
  * @param scriptPath - 流水线状态脚本绝对路径
+ * @param stateFile - **模型口径**的流水线状态文件路径（Windows 宿主上是 WSL 视角路径）
  */
-export function buildSkillContent(raw: string, skillsDir: string, scriptPath: string): string {
+export function buildSkillContent(raw: string, skillsDir: string, scriptPath: string,
+                                  stateFile: string): string {
   const content = raw
     .replaceAll('{{SKILLS_DIR}}', skillsDir)
     .replaceAll('{{PIPELINE_SCRIPT}}', scriptPath)
+    .replaceAll('{{PIPELINE_STATE_FILE}}', stateFile)
   return (
     content +
     `\n\n## 技能资源\n\n` +
@@ -116,7 +119,8 @@ export function registerVendoredSkills(
       name: parsed.name,
       description: parsed.description,
       whenToUse: parsed.whenToUse,
-      content: buildSkillContent(parsed.content, modelPaths.skillsDir, modelPaths.pipelineScript),
+      content: buildSkillContent(parsed.content, modelPaths.skillsDir,
+                                 modelPaths.pipelineScript, modelPaths.stateFileModel),
       path: skillFile,
       source: 'bundled',
       resourceBase: { kind: 'directory', path: skillDir },

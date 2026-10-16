@@ -32,6 +32,39 @@ metadata:
    - 例外：仅当用户明确要求「修改测试用例」并接受其为本地 XTS workaround 时才可动用例源码，
      且在报告里标注为 workaround 而非产品修复。
 
+## 产出（硬约定）
+
+分诊结束时**必须**把失败测试项写入流水线状态——这是「分诊 → 回归」之间唯一的交接物。
+回归阶段据此在 OTA 成功后重跑这些测试项；不写就没有可重跑目标（会以 `INCONCLUSIVE` 结束）。
+
+```bash
+python3 "{{PIPELINE_SCRIPT}}" set triage '{
+  "failedModules": ["DctsDmsFaTest", "DctsDmsFwkStagePermissionTest"],
+  "failedCases": ["DctsDmsFaTest#SUB_DMS_StandardOs_collaboration_connectAbility_connectRemoteAbility_0500"],
+  "modules": {"DctsDmsFaTest": {"tests": 45, "failed": 1,
+                                "cases": ["SUB_DMS_StandardOs_collaboration_connectAbility_connectRemoteAbility_0500"]}}
+}' --file "{{PIPELINE_STATE_FILE}}"
+```
+
+| 字段 | 形状 | 语义与**命名空间**（最容易错的地方） |
+| --- | --- | --- |
+| `failedModules` | `["模块名", ...]` | xdevice `-l` 要的**模块名**（HAP 模块名）。取值来源：报告 `result/<X>.xml` 的 `<X>`（或文件名），等价于运行器 `testcases/<X>.json`。**不是** `<testsuite name>` 里的**测试类名**。 |
+| `failedCases` | `["模块名#用例名", ...]` | **清单**，不是数量。用例名取 `<testcase name>`（如 `SUB_DMS_..._0500`）。只想记数量请写 `modules.<模块>.failed`。 |
+| `modules` | `{模块名: {tests, failed, cases}}` | 每个模块的用例总数/失败数/失败用例清单（供报告与二次复跑使用）。键同样是**模块名**。 |
+
+自检（写之前先确认模块名在本地运行器里存在，避免把类名当模块名）：
+
+```bash
+ls "<运行器目录>/testcases/"*.json | xargs -n1 basename | sed 's/\.json$//'   # 这就是 -l 能用的模块名全集
+hdc list targets                                                               # 设备在位时才能重跑
+```
+
+补充要求：
+
+- `failedModules` 与 `failedCases` 的**模块名必须一致**（同一次分诊里不要出现两套命名）；
+- 结论是「测试侧问题」时同样要写（回归需要复跑以证明不是产品缺陷），并同时走豁免路径；
+- `set` 会校验形状：`failedCases` 写成数字、模块名写成测试类名这类问题会被当场指出。
+
 ## 分诊流程
 
 1. 建立失败表。

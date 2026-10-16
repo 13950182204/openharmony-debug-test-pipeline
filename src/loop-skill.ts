@@ -73,7 +73,13 @@ export function buildLoopSkill(config: Config, root: string = packageRoot()): Sk
    定位测试源码、提取 hilog 证据、分类根因（产品能力/HDF 配置/框架行为/断言容差/环境/挂起/崩溃）、
    核查上游（gitcode.com/openharmony）是否已有修复，给出修复优先级建议。
    分诊结论必须明确「产品侧 or 测试侧」：测试侧按规则 1 转 waiver 路径，不进入 fix。
-   记录产物 triageSummary（根因分类、涉及模块、产品侧/测试侧判定）。
+   记录产物（**字段名固定，回归阶段按此消费**）：
+   - \`failedModules\`：失败测试项清单，取 **xdevice 模块名**（报告 \`result/<X>.xml\` 的 \`<X>\`，
+     等价于运行器 \`testcases/<X>.json\`；**不是** \`<testsuite name>\` 里的测试类名）；
+   - \`failedCases\`：\`["<模块名>#<用例名>", ...]\` 清单（**不是数量**）；
+   - \`modules\`：\`{模块名: {tests, failed, cases}}\` 供报告与复跑使用。
+   OTA 成功后回归阶段用这三项在设备上重跑（见 skill \`openharmony-ci-orchestrator\` 的
+   \`xts-rerun\`）。\`pipeline_state.py set triage\` 会校验形状，写错当场报错。
 
 3. **fix（按 Karpathy 规范修复，仅限产品/框架侧根因）**: 进入本阶段前先执行规则 1 的判定：
    根因在测试用例/测试包/测试环境侧时，改走 waiver 阶段，不得修改用例源码。

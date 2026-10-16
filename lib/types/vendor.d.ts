@@ -26,8 +26,9 @@ export declare function parseSkillFrontmatter(raw: string): ParsedSkill | undefi
  * @param raw - SKILL.md 原始内容
  * @param skillsDir - 插件包 skills/ 目录绝对路径
  * @param scriptPath - 流水线状态脚本绝对路径
+ * @param stateFile - **模型口径**的流水线状态文件路径（Windows 宿主上是 WSL 视角路径）
  */
-export declare function buildSkillContent(raw: string, skillsDir: string, scriptPath: string): string;
+export declare function buildSkillContent(raw: string, skillsDir: string, scriptPath: string, stateFile: string): string;
 /** 插件包根目录（lib/vendor.js → 包根） */
 export declare function packageRoot(): string;
 /**

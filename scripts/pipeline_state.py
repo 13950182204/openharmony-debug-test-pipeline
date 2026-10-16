@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,6 +139,79 @@ def cmd_get(state: dict) -> int:
     return 0
 
 
+MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{2,63}$")
+
+
+def looks_like_test_class(name: str) -> bool:
+    """启发式：小写开头的驼峰（如 dmsJsUnitTest）通常是测试类名而非 HAP 模块名。"""
+    return bool(name) and name[0].islower()
+
+
+def validate_stage_artifacts(stage: str, artifacts: dict) -> tuple[list[str], list[str]]:
+    """校验一个阶段写入的产物形状，返回 (errors, warnings)。
+
+    为什么需要：`set` 原先接受任意 JSON，于是出现过 `failedCases: 3`（数量而非清单）与
+    "模块名写成测试类名" 这类**静默**不一致——两端各自演化、直到运行期才暴露。
+    本函数只校验结构与命名空间边界（不做业务正确性判断）：错误阻塞写入，警告提示。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if stage != "triage":
+        return errors, warnings
+
+    failed_cases = artifacts.get("failedCases")
+    if failed_cases is not None:
+        if not isinstance(failed_cases, list):
+            errors.append(
+                f"failedCases 必须是清单（如 [\'ActsUdmfTest#case_0100\']），"
+                f"收到 {type(failed_cases).__name__}={failed_cases!r}；"
+                f"只想记数量时请写 modules.<模块>.failed"
+            )
+        else:
+            for item in failed_cases:
+                if not isinstance(item, str) or "#" not in item:
+                    errors.append(f"failedCases 每项应为 '<模块名>#<用例名>'，收到 {item!r}")
+
+    failed_modules = artifacts.get("failedModules")
+    if failed_modules is not None:
+        if not isinstance(failed_modules, list):
+            errors.append(f"failedModules 必须是模块名清单，收到 {type(failed_modules).__name__}")
+        else:
+            for name in failed_modules:
+                if not isinstance(name, str) or not MODULE_NAME_PATTERN.match(name):
+                    errors.append(f"failedModules 含非法模块名: {name!r}")
+                elif looks_like_test_class(name):
+                    warnings.append(f"failedModules 里的 {name!r} 小写开头，"
+                                    "看起来是测试类名（报告 <testsuite name>）；xdevice -l 要的是模块名")
+
+    modules = artifacts.get("modules")
+    if modules is not None:
+        if not isinstance(modules, dict):
+            errors.append("modules 必须是 {模块名: {tests, failed, cases}} 对象，"
+                          f"收到 {type(modules).__name__}")
+        else:
+            for name, info in modules.items():
+                if not isinstance(name, str) or not MODULE_NAME_PATTERN.match(name):
+                    errors.append(f"modules 的键不是合法模块名: {name!r}")
+                    continue
+                if looks_like_test_class(name):
+                    warnings.append(f"modules 的键 {name!r} 小写开头，看起来是测试类名")
+                if not isinstance(info, dict):
+                    errors.append(f"modules[{name!r}] 必须是对象（tests/failed/cases）")
+                    continue
+                if "failed" in info and not isinstance(info["failed"], int):
+                    errors.append(f"modules[{name!r}].failed 必须是整数")
+                if "cases" in info and not isinstance(info["cases"], list):
+                    errors.append(f"modules[{name!r}].cases 必须是清单")
+
+    if failed_modules is None and modules is None:
+        warnings.append(
+            "未登记 failedModules/modules：回归阶段将没有可重跑的测试项（会以 INCONCLUSIVE 结束）；"
+            "请写入 failedModules（xdevice -l 用的模块名）"
+        )
+    return errors, warnings
+
+
 def cmd_set(args: argparse.Namespace, state: dict) -> int:
     if args.stage not in VALID_STAGES:
         print(f"error: 非法阶段 {args.stage!r}，允许: {sorted(VALID_STAGES)}", file=sys.stderr)
@@ -149,6 +223,15 @@ def cmd_set(args: argparse.Namespace, state: dict) -> int:
         return 2
     if not isinstance(artifacts, dict):
         print("error: artifacts 必须是 JSON 对象", file=sys.stderr)
+        return 2
+    errors, warnings = validate_stage_artifacts(args.stage, artifacts)
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        print("error: 产物形状不合约定，未写入（见 triage SKILL 的『产出（硬约定）』）",
+              file=sys.stderr)
         return 2
     state["stage"] = args.stage
     state["artifacts"].update(artifacts)

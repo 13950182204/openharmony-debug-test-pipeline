@@ -165,7 +165,7 @@ Settings → 插件配置 中调整。
 pnpm install
 pnpm build          # tsc 产出 lib/（typescript 5.7 rewriteRelativeImportExtensions）
 pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件 / provider 接线
-pnpm test:python    # vendored skill 自带的 python 单测（ci_orchestrator / glab）
+pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestrator / glab
 ```
 
 ### Windows 侧重装（DSH Desktop）
