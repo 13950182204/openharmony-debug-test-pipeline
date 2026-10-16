@@ -2,6 +2,38 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.2.6] - 2026-10-16
+
+**给设备访问层加 WSL interop 抖动重试**——这是当前唯一会"偶发打断整轮 OTA"的因素。
+
+### 背景
+
+实测（2026-10-16）：在 **systemd 单元上下文**里 `hdc` 报
+
+```
+<3>WSL (3907270 - ) ERROR: UtilAcceptVsock:281: accept4 failed 110
+```
+
+而**同一时刻**交互 shell 下同样的 `hdc` 连打 8 次全正常。也就是说这是 interop 的瞬时故障，
+不是命令本身的问题——但它会让那一轮 OTA 直接失败（整轮 OTA 被一次握手抖动打断）。
+
+### 新增
+
+- `run_command` 内置 interop 抖动重试：**只在**输出含抖动特征（`accept4 failed` /
+  `UtilAcceptVsock` / `vsock` / `interop`）时重试，默认 **2 次**（共 3 次尝试），间隔 3s，
+  可用 `CI_INTEROP_RETRIES` 调整（`0` 关闭）。
+- 覆盖两类形态：进程非零退出且输出含特征、或直接抛 `SubprocessError/TimeoutExpired` 且含特征。
+- **非 interop 失败一律不重试**（避免把真实缺陷掩盖成"偶发"）：测试里用真实错误文本
+  （`[Fail]Device not founded or connected`）断言只尝试一次、且不 sleep。
+- 重试只作用于可安全重放的调用：设备查询/安装/OTA 命令与 xdevice（xdevice 每次生成新的报告目录，
+  重试不会与上一次混淆）。
+
+### 验证
+
+- 单测 5 项：抖动后成功（含重试次数与 sleep 断言）、抖动耗尽后仍失败、真实错误不重试、
+  特征匹配（含真实错误行）、`CI_INTEROP_RETRIES=0` 关闭。
+- 真机：走重试包装的 `hdc` 查询正常返回；离线设备查询（真实错误文本）**未被重试**即原样抛出。
+
 ## [1.2.5] - 2026-10-16
 
 **真闭环暴露并修掉两个缺陷**（契约从"写下来"到"真的接通"）。

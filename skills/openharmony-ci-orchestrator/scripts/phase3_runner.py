@@ -102,26 +102,77 @@ def resolved_artifact_patterns(profile: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
+# WSL interop 抖动的特征：经 interop 调用的 Windows 程序偶发连不上宿主（vsock accept 失败）。
+# 实测（2026-10-16）：systemd 单元上下文里 `hdc … WSL ERROR: UtilAcceptVsock:281: accept4
+# failed 110`，而同一时刻交互 shell 下同样的 hdc 8/8 正常 —— 属瞬时故障，不是命令本身的问题。
+INTEROP_FLAKY_PATTERN = re.compile(
+    r"accept4 failed|UtilAcceptVsock|vsock|UtilConnectVsock|interop", re.IGNORECASE)
+DEFAULT_INTEROP_RETRIES = 2          # 首次 + 2 次重试 = 最多 3 次尝试
+DEFAULT_INTEROP_RETRY_DELAY = 3      # 秒
+
+
+def interop_flaky(stderr: str, stdout: str = "") -> bool:
+    """Is this failure a transient WSL-interop hiccup rather than a real command failure?"""
+    return bool(INTEROP_FLAKY_PATTERN.search(stderr or "")) or bool(
+        INTEROP_FLAKY_PATTERN.search(stdout or ""))
+
+
+def interop_retries() -> int:
+    try:
+        return max(0, int(os.environ.get("CI_INTEROP_RETRIES", DEFAULT_INTEROP_RETRIES)))
+    except ValueError:
+        return DEFAULT_INTEROP_RETRIES
+
+
+def _run_once(command: list[str], timeout: int, cwd: str | None, decode_errors: str):
+    return subprocess.run(_bounded(command, timeout), text=True, capture_output=True,
+                          timeout=timeout + 15, check=False, cwd=cwd, errors=decode_errors)
+
+
 def run_command(
     command: list[str], timeout: int = 60, check: bool = True, max_capture: int = MAX_CAPTURE,
     cwd: str | None = None, decode_errors: str = "strict",
 ) -> str:
-    """Run one bounded external command.
+    """Run one bounded external command, retrying transient WSL-interop failures.
 
-    `decode_errors="replace"`：经 WSL interop 调用的 Windows 程序（cmd.exe/xdevice）会按控制台
-    代码页输出 GBK 字节，严格 utf-8 解码会抛 UnicodeDecodeError 并让整步失败（实测一次）。
+    两类失败会被自动重试（最多 `CI_INTEROP_RETRIES` 次，默认 2）：进程以非零码退出且输出含
+    interop 抖动特征、或直接抛 `SubprocessError/TimeoutExpired` 且输出含该特征。
+    **只重试无副作用或可安全重放的调用**——设备查询/安装/OTA 命令与 xdevice 都属于此类
+    （xdevice 每次生成新报告目录，重试不会与上一次混淆）。
+
+    非 interop 的失败一律不重试（避免把真实缺陷掩盖成"偶发"）。
+    `decode_errors="replace"`：经 interop 调用的 Windows 程序（cmd.exe/xdevice）按控制台代码页
+    输出 GBK 字节，严格 utf-8 解码会抛 UnicodeDecodeError 并让整步失败（实测一次）。
     """
-    result = subprocess.run(_bounded(command, timeout), text=True, capture_output=True,
-                            timeout=timeout + 15, check=False, cwd=cwd,
-                            errors=decode_errors)
-    output = result.stdout.strip()
+    attempts = interop_retries() + 1
+    completed = None
+    for attempt in range(1, attempts + 1):
+        try:
+            completed = _run_once(command, timeout, cwd, decode_errors)
+            flaky = interop_flaky(completed.stderr, completed.stdout)
+        except (OSError, subprocess.SubprocessError) as error:
+            text = str(error)
+            if attempt >= attempts or not interop_flaky(text):
+                raise
+            print(f"interop hiccup on attempt {attempt}/{attempts}: {text[:160]}; retrying",
+                  file=sys.stderr)
+            time.sleep(DEFAULT_INTEROP_RETRY_DELAY)
+            continue
+        if completed.returncode == 0 or not flaky or attempt >= attempts:
+            break
+        print(f"interop hiccup on attempt {attempt}/{attempts}: "
+              f"{(completed.stderr or completed.stdout).strip()[:160]}; retrying", file=sys.stderr)
+        time.sleep(DEFAULT_INTEROP_RETRY_DELAY)
+    assert completed is not None
+    output = completed.stdout.strip()
     if len(output) > max_capture:
         output = output[-max_capture:]
-    if check and result.returncode:
-        detail = result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr
+    if check and completed.returncode:
+        detail = completed.stdout + ("\n" if completed.stdout and completed.stderr else "") + completed.stderr
         if len(detail) > max_capture:
             detail = detail[-max_capture:]
-        raise Phase3Error(f"Command failed ({result.returncode}): {' '.join(command[:3])}: {detail}")
+        raise Phase3Error(
+            f"Command failed ({completed.returncode}): {' '.join(command[:3])}: {detail}")
     return output
 
 

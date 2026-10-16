@@ -635,6 +635,52 @@ class Phase3RunnerTests(unittest.TestCase):
             output = runner.run_command(["glab", "api", "notes"], max_capture=10_000)
         self.assertEqual(len(output), 9_002)
 
+    def test_interop_hiccup_is_retried_then_succeeds(self) -> None:
+        """实测故障：systemd 单元里 hdc 偶发 WSL ERROR: UtilAcceptVsock accept4 failed 110。"""
+        flaky = mock.Mock(returncode=1, stdout="",
+                          stderr="<3>WSL (3907270 - ) ERROR: UtilAcceptVsock:281: accept4 failed 110\n")
+        ok = mock.Mock(returncode=0, stdout="device-1\n", stderr="")
+        with mock.patch.object(runner.subprocess, "run", side_effect=[flaky, ok]) as call, \
+                mock.patch.object(runner.time, "sleep") as sleep:
+            output = runner.run_command(["hdc", "list", "targets"], timeout=5)
+        self.assertEqual(output, "device-1")
+        self.assertEqual(call.call_count, 2, "抖动后必须重试")
+        sleep.assert_called_once()
+
+    def test_interop_hiccup_gives_up_after_the_configured_retries(self) -> None:
+        flaky = mock.Mock(returncode=1, stdout="", stderr="UtilAcceptVsock accept4 failed 110")
+        with mock.patch.object(runner.subprocess, "run", return_value=flaky) as call, \
+                mock.patch.object(runner.time, "sleep"), \
+                mock.patch.dict("os.environ", {"CI_INTEROP_RETRIES": "1"}):
+            with self.assertRaisesRegex(runner.Phase3Error, "accept4 failed"):
+                runner.run_command(["hdc", "list", "targets"], timeout=5)
+        self.assertEqual(call.call_count, 2, "默认重试 1 次 = 共 2 次尝试")
+
+    def test_real_failures_are_not_retried(self) -> None:
+        """只有 interop 抖动才重试；真实报错必须原样暴露，不能掩盖成"偶发"。"""
+        real = mock.Mock(returncode=1, stdout="", stderr="[Fail]Device not founded or connected")
+        with mock.patch.object(runner.subprocess, "run", return_value=real) as call, \
+                mock.patch.object(runner.time, "sleep") as sleep:
+            with self.assertRaisesRegex(runner.Phase3Error, "Device not founded"):
+                runner.run_command(["hdc", "list", "targets"], timeout=5)
+        self.assertEqual(call.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_interop_pattern_matches_the_real_error_text(self) -> None:
+        self.assertTrue(runner.interop_flaky(
+            "<3>WSL (3751992 - ) ERROR: UtilAcceptVsock:281: accept4 failed 110"))
+        self.assertTrue(runner.interop_flaky("", "vsock connection reset"))
+        self.assertFalse(runner.interop_flaky("verify updater params fail"))
+        self.assertFalse(runner.interop_flaky(""))
+
+    def test_interop_retries_can_be_disabled(self) -> None:
+        flaky = mock.Mock(returncode=1, stdout="", stderr="accept4 failed")
+        with mock.patch.object(runner.subprocess, "run", return_value=flaky) as call, \
+                mock.patch.dict("os.environ", {"CI_INTEROP_RETRIES": "0"}):
+            with self.assertRaises(runner.Phase3Error):
+                runner.run_command(["hdc", "list", "targets"], timeout=5)
+        self.assertEqual(call.call_count, 1)
+
     def test_hdc_output_filters_only_the_known_local_warning(self) -> None:
         output = "sun65iw1[W][2026-08-09 20:50:11] FreeChannelContinue handle->data is nullptr\n"
         with mock.patch.object(runner, "run_command", return_value=output):
