@@ -66,7 +66,7 @@ const HOST_SDK = [
   '@deepseek-ai/dsh-shell',
   '@deepseek-ai/dsh-tool-fs-search',
 ]
-const HOST_SDK_VERSION = '0.2.0-rc.2'
+const HOST_SDK_VERSION = '0.2.1-rc.1'
 
 /** 解析 DSH Desktop 自带的 runtime 目录（含 node 与 pnpm）。 */
 function resolveRuntime() {
@@ -83,21 +83,42 @@ function resolveRuntime() {
   return undefined
 }
 
-/** 每个 `@deepseek-ai/*` 包在 profile 树里的版本与嵌套副本（自检用）。 */
+/**
+ * 每个 `@deepseek-ai/*` 包在 profile 树里的版本与嵌套副本（自检用）。
+ *
+ * 只把**版本不同**的嵌套副本视为风险：真正的隐患是"同版本号但不同模块 URL"
+ * 之外的多版本混用（见知识库《DSH-rc1工具调度器与Web profile重复模块故障》）。
+ * 同版本的物理嵌套（hoisted linker 在 overrides 下的正常产物）只提示、不失败——
+ * 否则每次 SDK 升级都会被误判为故障（实测 2026-10-17：0.2.1-rc.1 的
+ * `dsh-fs-local`/`dsh-tool-fs-search` 各嵌套了一份**同版本**的 cosmokit/schemastery）。
+ */
 function auditCoreCopies(nodeModules) {
   const scope = join(nodeModules, '@deepseek-ai')
-  if (!existsSync(scope)) return { versions: {}, nested: [] }
+  if (!existsSync(scope)) return { versions: {}, nested: [], sameVersionNested: [] }
+  // 两遍扫描：先把所有顶层版本收齐，再判定嵌套副本（一遍扫描会因 readdir 顺序
+  // 出现 `versions[dep]` 尚未赋值的假阳性——实测 2026-10-17 误报 schemastery）。
   const versions = {}
-  const nested = []
   for (const name of readdirSync(scope)) {
     const manifest = join(scope, name, 'package.json')
     if (!existsSync(manifest)) continue
     versions[name] = JSON.parse(readFileSync(manifest, 'utf8')).version
+  }
+  const nested = []
+  const sameVersionNested = []
+  for (const name of readdirSync(scope)) {
     const inner = join(scope, name, 'node_modules', '@deepseek-ai')
     if (!existsSync(inner)) continue
-    for (const dep of readdirSync(inner)) nested.push(`${name} -> ${dep}`)
+    for (const dep of readdirSync(inner)) {
+      const depManifest = join(inner, dep, 'package.json')
+      const depVersion = existsSync(depManifest)
+        ? JSON.parse(readFileSync(depManifest, 'utf8')).version
+        : undefined
+      const label = `${name} -> ${dep}@${depVersion ?? '?'}`
+      if (depVersion !== undefined && depVersion === versions[dep]) sameVersionNested.push(label)
+      else nested.push(label)
+    }
   }
-  return { versions, nested }
+  return { versions, nested, sameVersionNested }
 }
 
 const argv = process.argv.slice(2)
@@ -217,7 +238,11 @@ const result = spawnSync(
   [
     runtime.pnpm,
     'add',
-    '--config.auto-install-peers=true',
+    // 不要自动安装 peer：桌面运行时本身提供这些客户端包（app.asar 内），而
+    // `ohos-xts-auto-reporter` / `dsh-better-sidebar` 的 peer 范围（如
+    // `>=0.1.0-rc.7 <0.3.0`）在 npm 上只有**预发布**版本可匹配，semver 默认不匹配
+    // 预发布 → 自动装 peer 必定 `ERR_PNPM_NO_MATCHING_VERSION`（实测 2026-10-17）。
+    '--config.auto-install-peers=false',
     ...HOST_SDK.map((name) => `${name}@${HOST_SDK_VERSION}`),
   ],
   { cwd: profileDir, stdio: 'inherit', env },
@@ -247,8 +272,11 @@ const audit = auditCoreCopies(nodeModules)
 const coreVersions = Object.values(audit.versions)
 const distinct = new Set(coreVersions)
 console.log(`核心包 ${Object.keys(audit.versions).length} 个，版本种类 ${distinct.size}：`, [...distinct].join(', '))
+if (audit.sameVersionNested.length > 0) {
+  console.log('提示：存在同版本嵌套副本（不影响一致性）：', audit.sameVersionNested.join('; '))
+}
 if (audit.nested.length > 0) {
-  console.error('✗ 存在嵌套核心包副本：', audit.nested.join('; '))
+  console.error('✗ 存在**不同版本**的嵌套核心包副本：', audit.nested.join('; '))
   process.exit(1)
 }
 const missingPlugins = entries.filter((e) => !existsSync(join(nodeModules, e.name, 'package.json')))

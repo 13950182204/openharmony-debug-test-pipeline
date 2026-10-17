@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { SubagentActivation } from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import {
@@ -82,7 +82,7 @@ function buildReviewPrompt(args: MrReviewArgs, category: ReviewCategory): string
   return lines.join('\n')
 }
 
-function extractText(output: ContentBlock[]): string {
+function extractText(output: readonly ContentBlock[]): string {
   return output
     .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
     .map((block) => block.text)
@@ -112,16 +112,27 @@ async function runReviewer(
   ladder: LadderTier[],
   providerName: string,
 ): Promise<{ ok: boolean; text: string; tierName: string }> {
-  // 第一个参数是 **provider 名**（ctx.subagents 按它查表），不是运行标签：
+  // provider 仍是 **provider 名**（ctx.subagents 按它查表），不是运行标签：
   // 传运行名会直接 `no subagent provider registered for "<name>"` 失败。
   // DSH 内置 provider 名：fork（dsh-subagent-fork-in-process 默认）/ spawn。
-  const run = await ctx.subagents.start(providerName, {
-    prompt: [{ type: 'text', text: buildReviewPrompt(args, category) }],
-    parent,
+  //
+  // DSH 0.2.1-rc.1 起子代理 API 由 `start(name, request)` 改为 `startActivation(spec)`：
+  // provider / label / request / signal / delivery 五个顶层字段，request 内不再携带
+  // label 与 signal（类型上是 Omit<SubagentStartRequest, 'label' | 'signal'>）。
+  // `delivery: 'caller'` 表示只把结果返回给调用方、不额外通知模型——与本工具聚合并返回
+  // 六维结论的语义一致。
+  const activation: SubagentActivation = await ctx.subagents.startActivation({
+    provider: providerName,
+    label: `mr-review:${category}`,
+    request: {
+      prompt: [{ type: 'text', text: buildReviewPrompt(args, category) }],
+      parent,
+      agentOptions: agentOptionsForTier(tier),
+    },
     signal,
-    agentOptions: agentOptionsForTier(tier),
+    delivery: 'caller',
   })
-  const result = await run.result
+  const result = await activation.result
   // DSH 0.2.0 起 `SubagentResult.output` 为 readonly，浅拷贝一份再交给 extractText。
   const text = extractText([...result.output])
   if (result.stopReason !== 'completed') {

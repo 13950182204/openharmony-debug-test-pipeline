@@ -1,7 +1,7 @@
 {
   "name": "@superjunier/dsh-gitlab-credentials",
   "description": "GitLab credentials for the dsh web GUI: per-host token storage (~/.dsh/gitlab-credentials.json, 0600), validation against the GitLab API, automatic glab CLI sync, a settings-page section (credentials + MR preferences), and a read-only agent status surface. Tokens never enter conversation logs.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -44,7 +44,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.1",
     "schemastery": "^3.18.0"
   },
   "vendored": {

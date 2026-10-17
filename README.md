@@ -94,13 +94,19 @@ Windows 路径、模型在 WSL 里跑不动**）：
 
 ### DSH 版本兼容
 
-- **构建与类型检查基线：`0.2.0-rc.2`**（`devDependencies` 的 `@deepseek-ai/dsh-*`），
-  `package.json` 声明 `dsh.engines.dsh: ">=0.2.0-rc.2"`，并带
+- **构建与类型检查基线：`0.2.1-rc.1`**（`devDependencies` 的 `@deepseek-ai/dsh-*`），
+  `package.json` 声明 `dsh.engines.dsh: ">=0.2.1-rc.1"`，并带
   `dsh.compatibility.dshReleases` 兼容矩阵。
-- 插件不保留旧版本分支：0.1.2-rc.1 与 0.2.0-rc.2 的接触面（`defineTool`、`ctx.skills`、
-  `ctx.commands`、`ctx.subagents`、`Agent`/`AgentOptions`）除 `SubagentResult.output` 由
-  “可变”变为 `readonly` 外没有破坏性变更，因此**同一份代码在两个版本上都能加载**，
-  只是不再为旧版本做额外适配。
+- **0.2.1-rc.1 的破坏性变更（已适配）**：子代理 API 由 `ctx.subagents.start(name, request)`
+  改为 **`ctx.subagents.startActivation(spec)`**（`provider` / `label` / `request` / `signal` /
+  `delivery` 五个顶层字段，`request` 内不再携带 `label` 与 `signal`）。
+  `mr_review_six` 已改为该形状，`delivery: 'caller'` 保持"只把结果返回给调用方"的原语义。
+- **类型增强陷阱**：`ctx.subagents` 的类型来自 `@deepseek-ai/dsh-subagent` 的
+  `declare module '@deepseek-ai/cordis'`；该包**必须被 import 进编译程序**才会生效，
+  否则 tsc 报 `Property 'subagents' does not exist on type 'Context'`。
+  本仓库因此保留一个显式类型 import（`SubagentActivation`）。
+- 插件不保留旧版本分支：与 0.2.0-rc.2 的其余接触面（`defineTool`、`ctx.skills`、`ctx.commands`、
+  `Agent`/`AgentOptions`）没有变化，但**子代理调用已按 0.2.1-rc.1 改写**，不再回退兼容 0.2.0。
 
 
 ### 运行时依赖链接（`dsh-tools` 的 Symbol 一致性）

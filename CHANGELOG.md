@@ -2,6 +2,45 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.3.0] - 2026-10-17
+
+**适配 DSH `0.2.1-rc.1`（桌面版内嵌运行时）**。子代理 API 为破坏性变更，必须改代码而非只升版本号。
+
+### 破坏性变更与修复
+
+- **`ctx.subagents.start(name, request)` 已移除** → 改为 `ctx.subagents.startActivation(spec)`：
+  顶层 `provider` / `label` / `request` / `signal` / `delivery` 五个字段，
+  `request` 的类型是 `Omit<SubagentStartRequest, 'label' | 'signal'>`（这两项塞进去会被类型拒绝）。
+  `mr_review_six` 的六维审查调用已按新形状改写：
+  ```ts
+  const activation = await ctx.subagents.startActivation({
+    provider: providerName,
+    label: `mr-review:${category}`,
+    request: { prompt, parent, agentOptions },
+    signal,
+    delivery: 'caller',   // 只把结果返回给调用方，不额外通知模型
+  })
+  const result = await activation.result
+  ```
+- **类型增强陷阱**：`ctx.subagents` 的属性类型来自 `@deepseek-ai/dsh-subagent` 里的
+  `declare module '@deepseek-ai/cordis'` 增强。迁移时若顺手删掉对该包的 import，
+  tsc 会报 `Property 'subagents' does not exist on type 'Context'`；
+  现保留显式 `import type { SubagentActivation }` 既能表达依赖也能恢复增强。
+- `extractText()` 入参放宽为 `readonly ContentBlock[]`（`SubagentResult.output` 在 0.2.x 均为 readonly）。
+
+### 依赖与声明
+
+- 6 个 `devDependencies` 的 `@deepseek-ai/dsh-*` 与 `dependencies` 的 `@deepseek-ai/dsh-tools`
+  全部升到 `0.2.1-rc.1`；`dsh.engines.dsh` 改为 `>=0.2.1-rc.1`，兼容矩阵登记 `0.2.1-rc.1`。
+- 子包 `@superjunier/dsh-gitlab-credentials` 的 `@deepseek-ai/dsh-tools` 同步升到 `0.2.1-rc.1`。
+
+### 测试
+
+- `mr-review-tool.test.ts` 的 harness 从 `subagents.start` 改为 `startActivation`，
+  并新增断言：`request` 内**不得**出现 `label`/`signal`（0.2.1 的 Omit 约束）、
+  `label` 与 `signal` 在 spec 顶层、`delivery === 'caller'`。
+- 主包 typecheck / build / vitest 44 全绿；python 单测 10+77+15 全绿。
+
 ## [1.2.6] - 2026-10-16
 
 **给设备访问层加 WSL interop 抖动重试**——这是当前唯一会"偶发打断整轮 OTA"的因素。

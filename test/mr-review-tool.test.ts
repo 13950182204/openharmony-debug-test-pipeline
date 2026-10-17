@@ -5,27 +5,44 @@ import { registerMrReviewTool } from '../src/mr-review-tool.ts'
 /**
  * mr_review_six 的接线回归。
  *
- * 针对一次真实故障：工具把**运行名**（`mr-review-<类别>`）当作 `ctx.subagents.start()`
- * 的第一个参数，而该参数是 **provider 名**（`SubagentRuntime.expectProvider()` 按它查表），
- * 真实环境因此一律 `no subagent provider registered for "mr-review-security"` 失败。
+ * 针对一次真实故障：工具把**运行名**（`mr-review-<类别>`）当作子代理调用的 provider 参数，
+ * 而该参数是 **provider 名**（`SubagentRuntime` 按它查表），真实环境因此一律
+ * `no subagent provider registered for "mr-review-security"` 失败。
  * 此前没有任何测试覆盖该调用，所以编译通过与其余单测全绿都发现不了。
+ *
+ * DSH 0.2.1-rc.1 起 API 由 `start(name, request)` 改为 `startActivation(spec)`：
+ * provider / label / request / signal / delivery 五个顶层字段，request 内不含 label 与 signal。
  */
 
-interface Call { provider: string; request: Record<string, unknown> }
+interface Call {
+  provider: string
+  label: string
+  request: Record<string, unknown>
+  signal: unknown
+  delivery: string
+}
 
-/** 采集 subagents.start 入参的工具 harness，返回一个立刻完成的假 run。 */
+/** 采集 subagents.startActivation 入参的工具 harness，返回立刻完成的假 activation。 */
 function harness() {
   const calls: Call[] = []
   const register = vi.fn()
   const ctx = {
     subagents: {
-      start: async (provider: string, request: Record<string, unknown>) => {
-        calls.push({ provider, request })
+      startActivation: async (spec: Record<string, any>) => {
+        calls.push({
+          provider: spec.provider,
+          label: spec.label,
+          request: spec.request,
+          signal: spec.signal,
+          delivery: spec.delivery,
+        })
         return {
+          childId: 'child-1',
           result: Promise.resolve({
             output: [{ type: 'text', text: 'no findings' }],
             stopReason: 'completed',
           }),
+          dispose: async () => {},
         }
       },
     },
@@ -35,7 +52,7 @@ function harness() {
   return { ctx, calls, register }
 }
 
-/** 注册工具并执行一次单类别审查，返回捕获到的 start 调用。 */
+/** 注册工具并执行一次单类别审查，返回捕获到的 startActivation 调用。 */
 async function runOnce(config: Config, categories = ['security']): Promise<Call[]> {
   const { ctx, calls, register } = harness()
   registerMrReviewTool(ctx, config)
@@ -69,10 +86,17 @@ describe('mr_review_six 的 subagent provider 接线', () => {
     expect(calls.map(call => call.provider)).toEqual(['fork', 'fork'])
   })
 
-  it('请求里带上父代理与取消信号（子代理只读审查的前提）', async () => {
+  it('请求里带上父代理与提示，signal 与 label 走 spec 顶层（0.2.1 的 Omit 约束）', async () => {
     const calls = await runOnce({})
     expect(calls[0].request.parent).toBeTruthy()
-    expect(calls[0].request.signal).toBeInstanceOf(AbortSignal)
     expect(calls[0].request.prompt).toBeTruthy()
+    // 0.2.1-rc.1：request 的类型是 Omit<SubagentStartRequest, 'label' | 'signal'>，
+    // 这两项若塞进 request 会被类型拒绝（运行时也可能被忽略）。
+    expect(calls[0].request.signal).toBeUndefined()
+    expect(calls[0].request.label).toBeUndefined()
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal)
+    expect(calls[0].label).toBe('mr-review:security')
+    // 只把结果返回给调用方，不额外通知模型
+    expect(calls[0].delivery).toBe('caller')
   })
 })
