@@ -113,6 +113,34 @@ XTS/HATS/ACTS/DCTS/测试报告相关修复使用同样的标题语法：
 → 关闭/删除旧 MR（删源分支会自动关闭旧 MR；若旧分支上仍有 CI 构建在跑，先等它结束再删分支，
 或用 `PUT /merge_requests/<iid>` 的 `state_event=close` 显式关闭旧 MR）→ 如需 CI，用英文分支与同一 SHA 重新触发。
 
+## 应用子仓更新：必须同步主仓预编译 HAP
+
+当 MR 改的是**应用子仓指针**（如 `applications/standard/systemui`），而该应用在镜像里以**预编译 HAP** 交付时，
+子仓指针与预编译 HAP 必须在**同一个主仓 commit/MR** 里更新；只改子仓指针会导致镜像仍装旧 HAP（源码修复不生效）。
+
+判定（两条同时成立）：
+
+- 主仓存在 `applications/standard/<app>` 子仓，且 diff 中该路径只有 gitlink 变化；
+- `applications/standard/hap/BUILD.gn` 里有对应的 `ohos_prebuilt_etc("<x>_hap")`，其 `source` 指向
+  `applications/standard/hap/*.hap`（例：`navigationBar_hap` → `SystemUI-NavigationBar.hap`）。
+
+操作：
+
+1. 用子仓 MR 的 **head commit** 构建 release 口味 HAP（与既有预编译包同口味：`buildMode=release`、`debug=false`、
+   无 `sourceMaps`；不要提交 debug 包）。可用仓库内脚本：
+   `python3 automation/hap_build.py build --project applications/standard/<app> --module <m>@<t> \
+     --hvigor-arg=-p --hvigor-arg=debuggable=false --hvigor-arg=-p --hvigor-arg=hvigor-obfuscation=false`
+2. `hap-sign-tool verify-app` 验签通过后，用产物覆盖主仓 `applications/standard/hap/<对应的>.hap`
+   （文件名以 `BUILD.gn` 的 `source=` 为准），与子仓指针放同一 commit。
+3. HAP 在 Git LFS 中：提交的是指针，push 前 LFS 对象必须上传成功。`git push` 会走 LFS pre-push；
+   若 LFS HTTP 端点无凭据，可先用 GitLab LFS batch API（`POST .../info/lfs/objects/batch`，Basic 认证用
+   GitLab 用户名 + token）上传对象，再 `GIT_LFS_SKIP_PUSH=1 git push --force-with-lease`；
+   事后用 download batch 复核 oid/sha256 可拉取。
+4. 收尾用 `GET /projects/<id>/merge_requests/<iid>/changes` 核对**两处变更都在**：
+   `applications/standard/hap/<...>.hap` 的 LFS 指针（oid/size 变化）与 `applications/standard/<app>` 的 Subproject commit。
+5. 目标 HAP 名以 `grep -n "<x>_hap" applications/standard/hap/BUILD.gn` 为准；MR 描述写明
+   “同步子仓 <sha> + 更新预编译 HAP（release/已签名）”。参考示例：主仓 MR !239（systemui 导航栏触摸修复）。
+
 ## 发布 Worktree 规则
 
 从基于 `origin/v6.1.0.31_release` 的新建 worktree 提交。不要直接从长期存在的产品、modem、功能或脏集成分支提交。
