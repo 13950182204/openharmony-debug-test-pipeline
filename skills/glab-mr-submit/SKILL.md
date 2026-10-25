@@ -1,6 +1,6 @@
 ---
 name: glab-mr-submit
-description: 用 glab 为本地 git 改动创建、审查、修复并更新合规的 GitLab 合并请求，包括结构化的 OpenHarmony 动作/芯片/XTS 标题、自动标签与非阻塞里程碑匹配、标准化的 XTS/DCTS/测试报告 Markdown 记录、自动测试结果截图上传、v6.1.0.31 发布 worktree 隔离、精确文件暂存、创建后六维 Subagent 审查、同 MR 修复更新、worktree 安全检查、推送与创建后 MR 验证。当 agent 被要求提交或准备 MR、对照目标分支审查既有 MR 或当前分支、推送修复分支、附加测试证据、修复审查发现或执行公司 MR 流程时使用。
+description: 用 glab 为本地 git 改动创建、审查、修复并更新合规的 GitLab 合并请求，包括结构化的 OpenHarmony 动作/芯片/XTS 标题、自动标签与非阻塞里程碑匹配、标准化的 XTS/DCTS/测试报告 Markdown 记录、自动测试结果截图上传、v6.1.0.31 发布稀疏 worktree 隔离（wt）、精确文件暂存、创建后六维 Subagent 审查、同 MR 修复更新、worktree 安全检查、推送与创建后 MR 验证。当 agent 被要求提交或准备 MR、对照目标分支审查既有 MR 或当前分支、推送修复分支、附加测试证据、修复审查发现或执行公司 MR 流程时使用。
 ---
 
 # glab MR 提交
@@ -141,22 +141,27 @@ XTS/HATS/ACTS/DCTS/测试报告相关修复使用同样的标题语法：
 5. 目标 HAP 名以 `grep -n "<x>_hap" applications/standard/hap/BUILD.gn` 为准；MR 描述写明
    “同步子仓 <sha> + 更新预编译 HAP（release/已签名）”。参考示例：主仓 MR !239（systemui 导航栏触摸修复）。
 
-## 发布 Worktree 规则
+## 发布 Worktree 规则（硬规则：先建稀疏 worktree）
 
-从基于 `origin/v6.1.0.31_release` 的新建 worktree 提交。不要直接从长期存在的产品、modem、功能或脏集成分支提交。
+从基于 `origin/v6.1.0.31_release` 的**新建稀疏 worktree** 提交。不要直接从长期存在的产品、modem、
+功能或脏集成分支提交，也不要在主树 `/home/cx/os/6.1` 里直接改。
 
-修复在另一个 worktree 开发时用这个流程：
+用 `wt` 建树（已安装 `/home/cx/.local/bin/wt`，源 `automation/wt-worktree.sh`）：
 
 ```bash
-git diff -- path/one path/two > /tmp/fix.patch
-git worktree add -b <temporary-release-branch> /home/cx/os/worktrees/<slug> origin/v6.1.0.31_release
-cd /home/cx/os/worktrees/<slug>
-git apply /tmp/fix.patch
+wt new <iid> <slug> --dirs <模块1,模块2>      # 或 --patch /tmp/fix.patch --depth 3
+cd /home/cx/os/worktrees/mr-<iid>-<slug>
+git apply /tmp/fix.patch                      # 需要时
+wt ls                                         # 验收：index 应为个位数 MB
 ```
 
-辅助脚本在创建最终源分支、commit、push 或 MR 前，验证 `origin/v6.1.0.31_release` 是当前 `HEAD` 的祖先。校验失败时，新建发布 worktree 并只在那里应用选中的补丁。
-
-对完整检出不现实的大仓库，只有初始化 index 与 skip-worktree 位后才允许 index-only worktree。必需序列：
+- 预估目录不确定时先用最可能的 2–3 个模块建树，后续 `wt add-dirs` 扩展；**不要**用
+  `git sparse-checkout disable` 展开全树。
+- 修复在另一个 worktree 开发时：先 `git diff -- path/one path/two > /tmp/fix.patch`，再
+  `wt new <iid> <slug> --patch /tmp/fix.patch`（`wt` 自动把补丁涉及目录加进 cone）。
+- 辅助脚本在创建最终源分支、commit、push 或 MR 前，仍验证 `origin/v6.1.0.31_release` 是当前
+  `HEAD` 的祖先；校验失败时新建发布 worktree 并只在那里应用选中的补丁。
+- `index-only worktree` 仅作 `wt` 不可用时的兜底（大仓库、完整检出不现实时）：
 
 ```bash
 git worktree add --no-checkout /home/cx/os/worktrees/<slug> origin/v6.1.0.31_release
@@ -173,7 +178,7 @@ git -C /home/cx/os/worktrees/<slug> checkout HEAD -- path/one path/two
 标题推导的标签是自动的。下面的 `--label` 用于附加标签（可选），`--milestone` 是显式覆盖（可选）；省略它则使用非阻塞的分支-再-消息匹配器。
 
 1. 检查 `git status --short`，只识别属于该 MR 的文件。
-2. 从 `origin/v6.1.0.31_release` 新建发布 worktree，只在那里应用选中的补丁。
+2. 用 `wt new <iid> <slug> --dirs <模块...>`（或 `--patch`）建稀疏发布 worktree，只在那里应用选中的补丁；`wt ls` 确认 index 为个位数 MB。
 3. 把 commit 消息写入临时文件，例如 `/tmp/mr_message.txt`。
 4. 先 dry-run 脚本：
 
@@ -296,6 +301,7 @@ command
 
 出现以下情况停下并询问用户：
 
+- 当前目录不在 `worktrees/mr-*`，或 `wt ls` 显示该树 index 不是个位数 MB（稀疏未生效）。
 - 本地或远端找不到目标分支。
 - 当前 worktree 不是基于 `origin/v6.1.0.31_release`。
 - `192.168.11.238` 的 GitLab 认证缺失或无效。
