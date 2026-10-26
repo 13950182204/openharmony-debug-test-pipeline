@@ -23,7 +23,7 @@ GitLab 凭据管理插件（dsh web GUI）：按主机保存访问令牌（0600 
 ```bash
 # 从仓库目录（开发）
 cd <repo>/packages/gitlab-credentials
-pnpm install && npx tsdown          # postinstall 自动 vendoring runtime SDK；随后构建
+pnpm install && npx tsdown          # 只装构建期 devDependencies；随后构建
 dsh plugin --profile web add link:$(pwd)
 
 # 发布版（发布到 npm 后）
@@ -51,7 +51,7 @@ DSH Desktop 会在 **Windows 侧**加载插件，而凭据的实际消费者是 
 # 桌面侧安装（不能用 link:/file: 指向 WSL 路径，pnpm 会改写 UNC 为不存在的 /wsl.localhost/...）
 cd <repo>/packages/gitlab-credentials && npx tsdown
 pnpm pack --pack-destination <win-temp>          # 在 Windows 侧打包
-pnpm add --config.auto-install-peers=true <win-temp>\<tgz>   # cwd = <win-home>\.dsh\profiles\desktop
+pnpm add --config.auto-install-peers=false <win-temp>\<tgz>  # cwd = <win-home>\.dsh\profiles\desktop
 # 并把 "@superjunier/dsh-gitlab-credentials" 追加进该 profile 的 dsh.profile.bundles
 ```
 
@@ -61,16 +61,28 @@ pnpm add --config.auto-install-peers=true <win-temp>\<tgz>   # cwd = <win-home>\
   但代码是 **best-effort**（`routes.ts`: "glab may be absent; the store remains authoritative"），
   令牌照常入库，界面只提示同步失败。
 - **glab CLI 会话仍由 WSL 侧维护**：Windows 侧不做 glab 同步（`glab.ts` 只查 PATH 与 `/snap/glab/*`）。
-- 依赖：桌面 profile 需能解析 `@deepseek-ai/{cordis,dsh-host-webserver,dsh-llm,dsh-settings,dsh-system-prompt,dsh-tools}`
-  与 `schemastery`（这些是构建时的 external 依赖，运行期由宿主提供）。
+- 依赖：`@deepseek-ai/*`（cordis/dsh-host-webserver/dsh-llm/dsh-settings/dsh-system-prompt/dsh-tools）
+  是构建期 external、运行期由 DSH 宿主提供；`schemastery` 走普通 npm 依赖。**不要把宿主 SDK
+  装进 profile**（见下节）。
 
-## Runtime 依赖 vendoring（重要）
+## 宿主 SDK 的解析（不要 vendoring）
 
-`@deepseek-ai/*` host SDK（`dsh-settings` / `dsh-tools` 等）**没有发布到公开 npm registry**，由 DSH runtime 内置携带。插件作为 `link:` 本地包被 cordis 装载时，Node ESM 从插件的**真实路径**（如 `<repo>/packages/gitlab-credentials`）解析 import——缺少运行时依赖会以 `MODULE_NOT_FOUND` 直接拖垮整个 profile 启动（曾导致 `Failed to load plugins`，见 DSH 知识库故障记录）。
+DSH 0.2.1 起在 profile 上装了模块解析拦截层：profile 内的插件解析 `@deepseek-ai/*` 时，
+会回落到**安装目录**（`app.asar`）里的宿主副本；`link:` 安装的插件只要在
+`peerDependencies` 里声明了包名，即便插件目录的 `node_modules` 里有同名包，也会优先
+路由到宿主副本。因此本包：
 
-因此 `package.json` 的 **`postinstall`**（`scripts/link-runtime-deps.mjs`）会把运行时 SDK 以符号链接 vendoring 进插件自身 `node_modules`，指向当前 `~/.dsh/runtime/<ver>/node_modules/.pnpm/node_modules/@deepseek-ai`（目标包已在该树内，传递依赖随之全部可解析）。`pnpm install` 自动执行；删除插件目录后重新 link 即可。vendored 清单见 package.json 的 `"vendored"` 字段（自定义元数据，非依赖声明）。
+- `@deepseek-ai/dsh-tools` 只声明为 **`peerDependencies`**（`^0.2.1-rc.1`）；
+- 精确的 `0.2.1-rc.3` 放在 `devDependencies`，只用于 `tsc` / `tsdown`；
+- 不再有 `postinstall`，不再往插件或 profile 里链接/安装宿主 SDK。
 
-**故障教训**：任何新增/升级本地 link 插件，都必须先确认其 host 产物 import 的 SDK 能从插件目录解析，再用独立端口（`dsh --profile web --port <p> --no-open`）验证后再加入常驻 profile。
+**为什么不能装进 profile**：profile 里一旦出现 `node_modules/@deepseek-ai/dsh-tools`，
+解析就优先落到这个副本，连核心 `tools` 插件行本身都会加载它；两份模块实例的调度器
+`Symbol` 不同，`tools` 服务无法激活，DSH 启动直接失败（`Missing services: tools`）。
+**同版本号不等于同模块实例。**
+
+**故障教训**：本地 `link:` 安装后，用独立端口（`dsh --profile web --port <p> --no-open`）
+验证再纳入常驻 profile；并确认 `node_modules/@deepseek-ai/dsh-tools` 不存在于 profile 顶层。
 
 ## 安全模型
 
@@ -83,7 +95,7 @@ pnpm add --config.auto-install-peers=true <win-temp>\<tgz>   # cwd = <win-home>\
 
 ```bash
 pnpm add -D typescript tsdown @types/node @types/react @types/react-dom
-npx tsc --noEmit           # 类型检查（SDK 类型经 tsconfig paths 映射到运行时安装）
+npx tsc --noEmit           # 类型检查（SDK 类型来自 devDependencies 的 rc.3）
 npx tsdown                 # 双半构建：lib/index.js（host）+ lib/client.js（browser）
 npx tsx test/store.smoke.ts  # store 冒烟测试（0600/原子写/脱敏/偏好）
 ```

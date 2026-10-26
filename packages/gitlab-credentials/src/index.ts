@@ -114,13 +114,29 @@ function applyImpl(ctx: Context, config?: Config): void {
   }
 
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
-      setSource: (source) => {
-        current = source
-        sync()
-      },
-      onChange: sync,
-    })
+    // DSH 0.2.1-rc.1 的 SettingsForms 提供 installSection（注册表单并回传实时 config）；
+    // 0.2.1-rc.3 移除了该方法，改为 configure({ auto }) + 客户端 slot 自带页面。
+    // 本插件始终注册自定义的「GitLab 凭据」客户端分节，所以 rc.3 只需关闭自动生成的页面。
+    const legacy = settingsCtx.settings as unknown as {
+      installSection?: (
+        owner: Context,
+        ns: string,
+        schema: unknown,
+        value: unknown,
+        hooks: { setSource: (source: () => Config) => void; onChange: () => void },
+      ) => void
+    }
+    if (typeof legacy.installSection === 'function') {
+      legacy.installSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
+        setSource: (source) => {
+          current = source
+          sync()
+        },
+        onChange: sync,
+      })
+      return
+    }
+    settingsCtx.settings.configure({ auto: false }, ctx.fiber)
   })
 
   // Initial registration from the composition entry (deployments with no

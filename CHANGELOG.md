@@ -2,6 +2,52 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.4.0] - 2026-10-26
+
+**适配 DSH `0.2.1-rc.3`，并修掉“装插件把宿主 `dsh-tools` 覆盖、`tools` 服务起不来”的根因。**
+
+### 根因
+
+`@deepseek-ai/dsh-tools` 原来是 `dependencies` 里的精确钉版（`0.2.1-rc.1`）。桌面 profile 用
+hoisted linker，安装后 `~/.dsh/profiles/desktop/node_modules/@deepseek-ai/dsh-tools` 出现
+一份 rc.1。DSH 0.2.1+ 的 profile 解析拦截层对 profile 内 importer 优先走本地副本，于是连
+`dsh-base` 的 `tools` 插件行本身都加载了这份副本；两份模块实例的调度器 `Symbol` 不同，
+`tools` 服务无法激活，启动中止：
+
+```
+dsh: startup failed: 1 required plugin did not activate
+Plugins waiting for services (17): ... Missing services: tools
+```
+
+旧方案（`postinstall` + `link-runtime-dsh-tools.mjs` 链到活动运行时）在 Windows 宿主上
+直接跳过，且在 rc.3 上仍然会制造第二份模块实例，不能解决问题。
+
+### 修复
+
+- `@deepseek-ai/dsh-tools` 从 `dependencies` 移到 `peerDependencies`（`^0.2.1-rc.1`），
+  运行时由宿主提供；`devDependencies` 升到 `0.2.1-rc.3`（仅类型检查/构建）。
+- 删除 `scripts/link-runtime-dsh-tools.mjs`、`postinstall` / `link-runtime-deps` 脚本，
+  以及 `test/link-runtime-guard.test.ts`（守护对象已不存在）。
+- `engines.dsh` / `dsh.engines.dsh` 改为 `>=0.2.1-rc.1 <0.3.0`；兼容矩阵补
+  `0.2.1-rc.2` / `0.2.1-rc.3`。
+- 子包 `@superjunier/dsh-gitlab-credentials` 同样把 dsh-tools 移到 peer、devDeps 升 rc.3；
+  删掉它的 `scripts/link-runtime-deps.mjs` 与 tsconfig 里指向作者机器的绝对 `paths`。
+- `scripts/desktop-reinstall.mjs` 重写为 rc.3 口径：不再安装任何宿主 SDK，改用
+  `pnpm install --config.auto-install-peers=false`，安装后审计 profile 内
+  `@deepseek-ai/{dsh-tools,dsh-agent,dsh-llm,dsh-session,dsh-skill,dsh-commands,dsh-subagent}`，
+  出现即失败；最后用 `dsh --profile <p> --dump-config` 做组合校验。
+- `build` 脚本改为跨平台（`node -e fs.rmSync`），Windows 上不再因 `rm` 不存在而失败。
+- 修 `test/vendor.test.ts` 的 POSIX 假设（`/abs/x.json` 在 Windows 上应等于 `resolve(...)`）。
+
+### 验证
+
+- `pnpm install` / `pnpm typecheck` / `pnpm build` 全绿；vitest 40/40。
+- 官方安装流程（`dsh plugin --profile desktop add <tarball|dir>`）安装后：profile 内不再
+  出现 `@deepseek-ai/dsh-tools`，`dsh --profile desktop --dump-config` 通过，插件行
+  `oh-debug-pipeline` 正常激活，`tools` 服务不再缺失。
+- rc.1→rc.3 的 SDK 公开 API 逐字节一致（仅 package.json 版本/peer 不同），因此
+  `mr_review_six` 等调用代码无需改动。
+
 ## [1.3.0] - 2026-10-17
 
 **适配 DSH `0.2.1-rc.1`（桌面版内嵌运行时）**。子代理 API 为破坏性变更，必须改代码而非只升版本号。

@@ -8,24 +8,29 @@
  * 为什么需要这个脚本，而不是直接在 profile 目录 `pnpm add`：
  *
  * 1. **PATH 必须显式补上 node 目录**。DSH Desktop 自带的 pnpm 在派生子进程时不会把
- *    node 放进子环境 PATH，于是两包 `postinstall` 里的 `node ...` 一律报
- *    `'node' 不是内部或外部命令`（实测）。只补 `…/dependencies/node/bin`，
- *    **绝不把 Node 根目录加进 PATH**——Node 根目录同时含 `bash.exe`/`wsl.exe`，
- *    一旦进入 PATH 会顶掉 WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe 对
- *    `\\wsl.localhost\…` 路径无法工作，会连带打断会话里的 bash 工具。
+ *    node 放进子环境 PATH，两包安装/打包阶段可能因此报 `'node' 不是内部或外部命令`。
+ *    只补 `…/dependencies/node/bin`，**绝不把 Node 根目录加进 PATH**——Node 根目录
+ *    同时含 `bash.exe`/`wsl.exe`，一旦进入 PATH 会顶掉 WSL 的 bash 与 wsl.exe，
+ *    而 Windows 侧 bash.exe 对 `\\\\wsl.localhost\\…` 路径无法工作，会连带打断会话里的 bash 工具。
  *
- * 2. **依赖树必须保持"每个核心包只有一个版本"**。本插件的 `@deepseek-ai/dsh-tools`
- *    是精确钉版本（与 runtime 的 asar 副本同版本）；一旦 profile 里出现第二个版本的
- *    核心包，就会出现"同版本号但不同模块 URL"的隐患
- *    （参见知识库《DSH-rc1工具调度器与Web profile重复模块故障》）。
- *    脚本在安装后强制做一次副本矩阵自检，多副本即失败退出。
+ * 2. **绝不要把宿主 SDK（`@deepseek-ai/dsh-*`）装进 profile**。DSH 从 0.2.1-rc.1 起
+ *    在 profile 上装了模块解析拦截层：插件代码解析宿主 SDK 时，会回落到 **安装目录**
+ *    （app.asar）里的那一份。反过来，只要 profile 的 node_modules 里出现同名包，
+ *    解析就优先落到 profile 副本——核心插件（`tools` 等）会解析到另一个模块实例，
+ *    服务 Symbol 不一致，启动直接失败（实测 0.2.1-rc.3：`tools` 服务起不来，
+ *    17 个插件挂在 “Missing services: tools”）。
+ *    本插件因此只把 `@deepseek-ai/dsh-tools` 声明为 **peerDependency**（构建用的
+ *    精确版本在 devDependencies），安装时用 `--config.auto-install-peers=false`，
+ *    由宿主提供运行时副本。脚本安装后强制审计，profile 里出现 dsh-tools 即失败。
  *
  * 3. 安装完成后 profile 的 `dsh.profile.bundles` 必须含这两个包名，否则不会加载。
  *    脚本会校正并打印最终清单。
+ *
+ * 4. 配置行（`wslPackageRoot` / `stateFile`）缺失时补回默认值；存在则不动。
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,8 +39,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
  * 两个分发入口。**版本从各自 package.json 现读**，不写死——写死版本会在
- * 仓库升版后让助手去找一个不存在的 tarball 文件名（本脚本第一版就是这样，
- * 在 1.1.13 上直接失败）。
+ * 仓库升版后让助手去找一个不存在的 tarball 文件名。
  *
  * `dir` 是打包目录；tarball 文件名沿用 pnpm pack 的规则（scope 用 `-` 连接）。
  */
@@ -44,35 +48,28 @@ const PLUGINS = [
   { name: '@superjunier/dsh-gitlab-credentials', dir: join(REPO, 'packages', 'gitlab-credentials') },
 ]
 
+/** 宿主提供、**绝不能**出现在 profile 依赖里的核心包（出现即覆盖宿主插件/服务）。 */
+const FORBIDDEN_IN_PROFILE = [
+  '@deepseek-ai/dsh-tools',
+  '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-skill',
+  '@deepseek-ai/dsh-commands',
+  '@deepseek-ai/dsh-subagent',
+]
+
 /** pnpm pack 对带 scope 的包名所用的 tarball 文件名。 */
 function tgzName(name, version) {
   return `${name.replace(/^@/, '').replace(/\//g, '-')}-${version}.tgz`
 }
-
-/**
- * `dsh-wsl-workspace` 在启动期直接 import 的宿主 SDK 包。
- *
- * DSH Desktop 把宿主打在 `app.asar` 里，而插件装在 profile 下——Node 沿文件系统往上
- * 找裸包名**永远走不进归档**，于是这些 import 全部失败、WSL 变体预设生成不出来
- * （症状：`Unknown agent preset: wsl-standard`；见该插件 CHANGELOG 与
- * 《DSH-rc1工具调度器与Web profile重复模块故障》同类的"模块解析锚点"问题）。
- *
- * 修法是把它们以**与 runtime asar 相同的版本**装进 profile：不引入第二个版本，
- * 只是把归档里的那一份在 profile 侧变得可解析。
- */
-const HOST_SDK = [
-  '@deepseek-ai/dsh-fs',
-  '@deepseek-ai/dsh-fs-local',
-  '@deepseek-ai/dsh-shell',
-  '@deepseek-ai/dsh-tool-fs-search',
-]
-const HOST_SDK_VERSION = '0.2.1-rc.1'
 
 /** 解析 DSH Desktop 自带的 runtime 目录（含 node 与 pnpm）。 */
 function resolveRuntime() {
   const candidates = [
     join(process.env.LOCALAPPDATA ?? '', 'Programs', 'DeepSeek Harness', 'resources', 'runtime'),
     join('C:', 'Users', process.env.USERNAME ?? '', 'AppData', 'Local', 'Programs', 'DeepSeek Harness', 'resources', 'runtime'),
+    join('D:', 'dsh', 'resources', 'runtime'),
   ]
   for (const base of candidates) {
     if (base === '' || base.startsWith(':')) continue
@@ -83,42 +80,15 @@ function resolveRuntime() {
   return undefined
 }
 
-/**
- * 每个 `@deepseek-ai/*` 包在 profile 树里的版本与嵌套副本（自检用）。
- *
- * 只把**版本不同**的嵌套副本视为风险：真正的隐患是"同版本号但不同模块 URL"
- * 之外的多版本混用（见知识库《DSH-rc1工具调度器与Web profile重复模块故障》）。
- * 同版本的物理嵌套（hoisted linker 在 overrides 下的正常产物）只提示、不失败——
- * 否则每次 SDK 升级都会被误判为故障（实测 2026-10-17：0.2.1-rc.1 的
- * `dsh-fs-local`/`dsh-tool-fs-search` 各嵌套了一份**同版本**的 cosmokit/schemastery）。
- */
-function auditCoreCopies(nodeModules) {
+/** profile 里出现即判失败的宿主核心包。 */
+function auditHostSdk(nodeModules) {
   const scope = join(nodeModules, '@deepseek-ai')
-  if (!existsSync(scope)) return { versions: {}, nested: [], sameVersionNested: [] }
-  // 两遍扫描：先把所有顶层版本收齐，再判定嵌套副本（一遍扫描会因 readdir 顺序
-  // 出现 `versions[dep]` 尚未赋值的假阳性——实测 2026-10-17 误报 schemastery）。
-  const versions = {}
+  const found = []
+  if (!existsSync(scope)) return found
   for (const name of readdirSync(scope)) {
-    const manifest = join(scope, name, 'package.json')
-    if (!existsSync(manifest)) continue
-    versions[name] = JSON.parse(readFileSync(manifest, 'utf8')).version
+    if (FORBIDDEN_IN_PROFILE.includes(`@deepseek-ai/${name}`)) found.push(name)
   }
-  const nested = []
-  const sameVersionNested = []
-  for (const name of readdirSync(scope)) {
-    const inner = join(scope, name, 'node_modules', '@deepseek-ai')
-    if (!existsSync(inner)) continue
-    for (const dep of readdirSync(inner)) {
-      const depManifest = join(inner, dep, 'package.json')
-      const depVersion = existsSync(depManifest)
-        ? JSON.parse(readFileSync(depManifest, 'utf8')).version
-        : undefined
-      const label = `${name} -> ${dep}@${depVersion ?? '?'}`
-      if (depVersion !== undefined && depVersion === versions[dep]) sameVersionNested.push(label)
-      else nested.push(label)
-    }
-  }
-  return { versions, nested, sameVersionNested }
+  return found
 }
 
 const argv = process.argv.slice(2)
@@ -146,16 +116,16 @@ console.log(`runtime   : ${runtime.node}`)
 console.log(`plugins   : ${storeDir}`)
 
 // 0) 解析每个入口的包名/版本，tarball 缺失就**就地重打包**——这样即使
-//    `~/.dsh/plugins` 被清理（本机发生过多次），助手仍是一条命令可恢复。
+//    `~/.dsh/plugins` 被清理，助手仍是一条命令可恢复。
 const entries = PLUGINS.map(({ name, dir }) => {
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-  return { name, dir, version: manifest.version, tgz: tgzName(name, manifest.version), packed: false }
+  return { name, dir, version: manifest.version, tgz: tgzName(name, manifest.version) }
 })
 for (const entry of entries) {
   const path = join(storeDir, entry.tgz)
   if (existsSync(path)) continue
   console.log(`tarball 缺失，重新打包：${entry.tgz}`)
-  if (dryRun) { entry.packed = true; continue }
+  if (dryRun) continue
   const r = spawnSync(runtime.node, [runtime.pnpm, 'pack', '--pack-destination', storeDir], {
     cwd: entry.dir, stdio: 'inherit', timeout: 400000,
   })
@@ -163,7 +133,6 @@ for (const entry of entries) {
     console.error(`✗ 打包失败：${entry.name}（exit ${r.status}）`)
     process.exit(1)
   }
-  entry.packed = true
 }
 console.log('插件版本：', entries.map((e) => `${e.name}@${e.version}`).join(' | '))
 
@@ -181,7 +150,7 @@ manifest.dsh.profile ??= {}
 const bundles = (manifest.dsh.profile.bundles ??= [])
 for (const { name } of entries) if (!bundles.includes(name)) bundles.push(name)
 if (dryRun) {
-  console.log(`[dry-run] 清单将登记 ${entries.length} 个插件 + ${HOST_SDK.length} 个宿主 SDK 包，bundles=${bundles.length}`)
+  console.log(`[dry-run] 清单将登记 ${entries.length} 个插件，bundles=${bundles.length}`)
 } else {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
   console.log(`清单已更新（备份：${backupPath}），bundles=${bundles.length}`)
@@ -219,7 +188,7 @@ if (missingConfig.length > 0) {
   if (dryRun) {
     console.log(`[dry-run] 将补 ${missingConfig.length} 条插件配置行：${missingConfig.map(([id]) => id).join(', ')}`)
   } else {
-    if (!dryRun) copyFileSync(patchPath, `${patchPath}.bak-desktop-reinstall`)
+    copyFileSync(patchPath, `${patchPath}.bak-desktop-reinstall`)
     writeFileSync(patchPath, `${patchText.trimEnd()}\n\n${block}\n`, 'utf8')
     console.log(`已补插件配置行（备份：${patchPath}.bak-desktop-reinstall）：${missingConfig.map(([id]) => id).join(', ')}`)
   }
@@ -227,7 +196,7 @@ if (missingConfig.length > 0) {
   console.log('插件配置行已存在，未改动')
 }
 
-// 2) 安装：PATH 里只加 node 目录（见文件头注释的 bash.exe 陷阱）
+// 2) 安装：PATH 里只加 node 目录（见文件头注释的 bash.exe 陷阱），不自动装 peer。
 const env = { ...process.env, PATH: `${runtime.nodeBin};${process.env.PATH ?? ''}` }
 if (dryRun) {
   console.log('[dry-run] 跳过安装')
@@ -235,50 +204,23 @@ if (dryRun) {
 }
 const result = spawnSync(
   runtime.node,
-  [
-    runtime.pnpm,
-    'add',
-    // 不要自动安装 peer：桌面运行时本身提供这些客户端包（app.asar 内），而
-    // `ohos-xts-auto-reporter` / `dsh-better-sidebar` 的 peer 范围（如
-    // `>=0.1.0-rc.7 <0.3.0`）在 npm 上只有**预发布**版本可匹配，semver 默认不匹配
-    // 预发布 → 自动装 peer 必定 `ERR_PNPM_NO_MATCHING_VERSION`（实测 2026-10-17）。
-    '--config.auto-install-peers=false',
-    ...HOST_SDK.map((name) => `${name}@${HOST_SDK_VERSION}`),
-  ],
+  [runtime.pnpm, 'install', '--config.auto-install-peers=false'],
   { cwd: profileDir, stdio: 'inherit', env },
 )
 console.log('install exit =', result.status)
-
-// 2b) 校验宿主 SDK 包确实可解析（这是 WSL 变体预设能生成的前提）
-const pluginEntry = join(nodeModules, 'dsh-wsl-workspace', 'lib', 'index.js')
-if (existsSync(pluginEntry)) {
-  const probeScript = join(profileDir, '.resolve-probe.mjs')
-  const pkgs = [...HOST_SDK, '@deepseek-ai/schemastery', 'js-yaml']
-  writeFileSync(
-    probeScript,
-    `import { createRequire } from 'node:module'\n`
-    + `const req = createRequire(${JSON.stringify(pluginEntry)})\n`
-    + `const bad = []\n`
-    + `for (const p of ${JSON.stringify(pkgs)}) { try { req.resolve(p + '/package.json') } catch { bad.push(p) } }\n`
-    + `console.log(bad.length === 0 ? 'RESOLVE_OK' : 'RESOLVE_FAIL ' + bad.join(','))\n`,
-    'utf8',
-  )
-  const probe = spawnSync(runtime.node, [probeScript], { encoding: 'utf8' })
-  console.log('依赖可解析性:', (probe.stdout ?? '').trim() || '(无输出)')
-}
-
-// 3) 自检
-const audit = auditCoreCopies(nodeModules)
-const coreVersions = Object.values(audit.versions)
-const distinct = new Set(coreVersions)
-console.log(`核心包 ${Object.keys(audit.versions).length} 个，版本种类 ${distinct.size}：`, [...distinct].join(', '))
-if (audit.sameVersionNested.length > 0) {
-  console.log('提示：存在同版本嵌套副本（不影响一致性）：', audit.sameVersionNested.join('; '))
-}
-if (audit.nested.length > 0) {
-  console.error('✗ 存在**不同版本**的嵌套核心包副本：', audit.nested.join('; '))
+if (result.status !== 0) {
+  console.error('✗ 安装失败：profile 的 package.json / pnpm-lock.yaml 已由 pnpm 自己维护；先修网络或依赖声明再重跑。')
   process.exit(1)
 }
+
+// 3) 自检：宿主核心包不得进入 profile（否则会覆盖 app.asar 里的同名插件）
+const forbidden = auditHostSdk(nodeModules)
+if (forbidden.length > 0) {
+  console.error('✗ profile 里出现了宿主核心包（会覆盖运行时插件、导致 tools 服务起不来）：', forbidden.join(', '))
+  console.error('  删掉它们并重新安装：pnpm remove ' + forbidden.map((name) => `@deepseek-ai/${name}`).join(' '))
+  process.exit(1)
+}
+
 const missingPlugins = entries.filter((e) => !existsSync(join(nodeModules, e.name, 'package.json')))
 if (missingPlugins.length > 0) {
   console.error('✗ 插件未就位：', missingPlugins.map((p) => p.name).join(', '))
@@ -290,4 +232,17 @@ for (const { name, version } of entries) {
   console.log(`${flag} ${name}@${installed}（仓库 ${version}）`)
   if (installed !== version) process.exitCode = 1
 }
-console.log('完成。重启 DSH Desktop 后生效。')
+
+// 4) 组合校验：dump-config 不启动插件，但会把 bundles 组合成完整树；
+//    能跑通说明 profile 清单与 patch 层没有结构错误。
+const dshCmd = spawnSync('dsh', ['--profile', profile, '--dump-config'], { encoding: 'utf8', timeout: 180000 })
+if (dshCmd.error !== undefined) {
+  console.warn('⚠ 未找到 dsh CLI，跳过 --dump-config 校验（可手动执行：dsh --profile ' + profile + ' --dump-config）')
+} else if (dshCmd.status !== 0) {
+  console.error('✗ dsh --dump-config 失败：\n' + (dshCmd.stderr || dshCmd.stdout))
+  process.exit(1)
+} else {
+  console.log('✓ dsh --dump-config 通过（bundles/patch 结构可用）')
+}
+
+console.log('完成。**重启 DSH Desktop** 后生效；启动后在 设置 → 插件 里确认 oh-debug-pipeline 已加载。')

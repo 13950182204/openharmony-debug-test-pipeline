@@ -1,7 +1,7 @@
 {
   "name": "@superjunier/dsh-gitlab-credentials",
   "description": "GitLab credentials for the dsh web GUI: per-host token storage (~/.dsh/gitlab-credentials.json, 0600), validation against the GitLab API, automatic glab CLI sync, a settings-page section (credentials + MR preferences), and a read-only agent status surface. Tokens never enter conversation logs.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -32,6 +32,16 @@
         "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
+    },
+    "engines": {
+      "dsh": ">=0.2.1-rc.1 <0.3.0"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.1": "compatible",
+        "0.2.1-rc.2": "compatible",
+        "0.2.1-rc.3": "compatible"
+      }
     }
   },
   "files": [
@@ -41,23 +51,23 @@
     "README.md"
   ],
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.1 <0.3.0"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.1",
     "schemastery": "^3.18.0"
   },
-  "vendored": {
-    "@deepseek-ai/dsh-settings": "runtime tree",
-    "@deepseek-ai/dsh-tools": "runtime tree",
-    "@deepseek-ai/dsh-llm": "runtime tree",
-    "@deepseek-ai/dsh-host-webserver": "runtime tree",
-    "@deepseek-ai/dsh-system-prompt": "runtime tree",
-    "schemastery": "runtime tree",
-    "react": "runtime tree",
-    "react-dom": "runtime tree"
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-settings": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

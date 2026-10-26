@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   VENDORED_SKILLS,
   buildSkillContent,
@@ -153,7 +153,7 @@ describe('pipeline state', () => {
 
   it('expandStatePath 展开 ~ 与相对路径', () => {
     expect(expandStatePath('~/x.json').startsWith(homedir())).toBe(true)
-    expect(expandStatePath('/abs/x.json')).toBe('/abs/x.json')
+    expect(expandStatePath('/abs/x.json')).toBe(resolve('/abs/x.json'))
   })
 
   it('save/load 往返一致，事件保留', () => {

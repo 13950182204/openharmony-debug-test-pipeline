@@ -721,13 +721,18 @@ function applyImpl(ctx, config) {
 		}, `${PLUGIN_ID}: tools`);
 	};
 	ctx.inject(["settings"], (settingsCtx) => {
-		settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
-			setSource: (source) => {
-				current = source;
-				sync();
-			},
-			onChange: sync
-		});
+		const legacy = settingsCtx.settings;
+		if (typeof legacy.installSection === "function") {
+			legacy.installSection(ctx, SETTINGS_NAMESPACE, Config, config ?? {}, {
+				setSource: (source) => {
+					current = source;
+					sync();
+				},
+				onChange: sync
+			});
+			return;
+		}
+		settingsCtx.settings.configure({ auto: false }, ctx.fiber);
 	});
 	sync();
 }

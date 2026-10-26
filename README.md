@@ -94,47 +94,57 @@ Windows 路径、模型在 WSL 里跑不动**）：
 
 ### DSH 版本兼容
 
-- **构建与类型检查基线：`0.2.1-rc.1`**（`devDependencies` 的 `@deepseek-ai/dsh-*`），
-  `package.json` 声明 `dsh.engines.dsh: ">=0.2.1-rc.1"`，并带
-  `dsh.compatibility.dshReleases` 兼容矩阵。
+- **构建与类型检查基线：`0.2.1-rc.3`**（`devDependencies` 的 `@deepseek-ai/dsh-*`）。
+  `package.json` 同时声明：
+  - `engines.dsh`：`>=0.2.1-rc.1 <0.3.0`（DSH 安装/启动时的兼容判定）；
+  - `dsh.engines.dsh`：同一范围（插件市场展示用）；
+  - `dsh.compatibility.dshReleases`：登记 `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3`。
 - **0.2.1-rc.1 的破坏性变更（已适配）**：子代理 API 由 `ctx.subagents.start(name, request)`
   改为 **`ctx.subagents.startActivation(spec)`**（`provider` / `label` / `request` / `signal` /
   `delivery` 五个顶层字段，`request` 内不再携带 `label` 与 `signal`）。
-  `mr_review_six` 已改为该形状，`delivery: 'caller'` 保持"只把结果返回给调用方"的原语义。
+  `mr_review_six` 已改为该形状，`delivery: 'caller'` 保持“只把结果返回给调用方”的原语义。
 - **类型增强陷阱**：`ctx.subagents` 的类型来自 `@deepseek-ai/dsh-subagent` 的
   `declare module '@deepseek-ai/cordis'`；该包**必须被 import 进编译程序**才会生效，
   否则 tsc 报 `Property 'subagents' does not exist on type 'Context'`。
   本仓库因此保留一个显式类型 import（`SubagentActivation`）。
-- 插件不保留旧版本分支：与 0.2.0-rc.2 的其余接触面（`defineTool`、`ctx.skills`、`ctx.commands`、
-  `Agent`/`AgentOptions`）没有变化，但**子代理调用已按 0.2.1-rc.1 改写**，不再回退兼容 0.2.0。
+- **rc.2 / rc.3 没有新的破坏性变更**：`dsh-tools` / `dsh-agent` / `dsh-subagent` /
+  `dsh-skill` / `dsh-commands` 的 `lib/` 与类型声明和 rc.1 **逐字节一致**（仅
+  `package.json` 里的版本号与 peer 范围不同），因此调用代码无需再改；基线升到 rc.3 后
+  `typecheck` / `build` / 40 项 vitest 全绿。真正需要改的是**依赖形态**（下节）。
 
+### 宿主 SDK 的解析：`@deepseek-ai/dsh-tools` 只做 peer
 
-### 运行时依赖链接（`dsh-tools` 的 Symbol 一致性）
+DSH 0.2.1 起在 profile 上装了**模块解析拦截层**：profile 内插件（含 `link:` 安装）解析
+`@deepseek-ai/*` 时会回落到**安装目录**（`app.asar`）里的宿主副本；`link:` 安装的插件
+只要在 `peerDependencies` 里声明了包名，即便其仓库 `node_modules` 里有同名包，也会优先
+路由到宿主副本。因此本插件：
 
-`@deepseek-ai/dsh-tools` 导出的调度器使用进程内 `Symbol` 标识；插件必须与**正在运行的
-DSH** 使用同一份模块实例，不能只满足“版本号相同”。`postinstall` / `link-runtime-deps`
-会解析活动运行时（`~/.dsh/profiles/node_modules` → `~/.local/bin/dsh` wrapper 推导的
-`~/.dsh/runtime/<id>` → `~/.dsh/runtime/*` 里最新的一个）并链接 `dsh-tools`：
+- 把 `@deepseek-ai/dsh-tools` 声明为 **`peerDependencies`**（`^0.2.1-rc.1`），运行时由宿主提供；
+- 只在 `devDependencies` 保留精确的 `0.2.1-rc.3` 供类型检查与构建；
+- **没有** `postinstall` / `link-runtime-deps`，也**不往 profile 里装任何宿主 SDK**。
 
-- **声明版本 == 活动运行时版本** → 链接到活动运行时的 `dsh-tools`（Symbol 一致）；
-- **两者不同** → 跳过重链，保持 pnpm 解析结果（保证类型检查基线不被另一世代的
-  peer 类型污染），并打印提示；
-- **解析不到活动运行时** → 打印警告并 `exit 0`，**不打断 `pnpm install`**。
+为什么不能把 `dsh-tools` 装进 profile（1.3.0 的旧做法）：profile 里一旦出现
+`node_modules/@deepseek-ai/dsh-tools`，解析就优先落到这个副本——连 `dsh-base` 里的
+`tools` 插件行本身都会加载它。两份模块实例的调度器 `Symbol` 不同，`tools` 服务无法
+激活，启动直接失败（实测 0.2.1-rc.3：17 个插件挂在 `Missing services: tools`，
+`1 required plugin did not activate`）。**“版本号相同”不够——模块实例必须相同。**
 
-升级 DSH 后的推荐顺序：
+安装/升级 DSH 后的推荐顺序：
 
 ```bash
-dsh --profile web --dump-config     # 让共享运行时树先按新 runtime 生成
-pnpm install                        # 版本对齐后 postinstall 自动重链
-pnpm run link-runtime-deps          # 需要时手动补
-pnpm build
-systemctl --user restart deepseek-dsh-web.service
+pnpm install          # 只装 devDependencies 的 rc.3，用于构建
+pnpm build            # 产出 lib/（安装 tarball 时用的就是它）
+dsh --profile desktop --dump-config   # 确认 bundles/patch 组合无误
 ```
 
-排障：若插件启动报 `MODULE_NOT_FOUND`，先看 `readlink -f node_modules/@deepseek-ai/dsh-tools`
-是否指向活动运行时的同一份文件；再确认 profile 的 `dsh.profile.bundles` 里有
-`openharmony-debug-test-pipeline`。不要在 `/pipeline` 后面放自然语言；该命令只接受
-`status` 或 `reset`，实际闭环任务请直接作为普通对话发送。
+排障：
+
+- 先确认 profile 里**没有**宿主 SDK 副本：
+  PowerShell：`Test-Path "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@deepseek-ai\dsh-tools"`
+  应为 `False`；若为 `True`，删掉并重装（`pnpm remove @deepseek-ai/dsh-tools`）。
+- 再确认 profile 的 `dsh.profile.bundles` 里有 `openharmony-debug-test-pipeline`。
+- 不要在 `/pipeline` 后面放自然语言；该命令只接受 `status` 或 `reset`，实际闭环任务
+  请直接作为普通对话发送。
 
 ## 配置
 
@@ -169,7 +179,7 @@ Settings → 插件配置 中调整。
 
 ```bash
 pnpm install
-pnpm build          # tsc 产出 lib/（typescript 5.7 rewriteRelativeImportExtensions）
+pnpm build          # tsc 产出 lib/（TypeScript 5.9，rewriteRelativeImportExtensions）
 pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件 / provider 接线
 pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestrator / glab
 ```
@@ -178,23 +188,20 @@ pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestra
 
 在 Windows 上跑（Node 20+ 任意）：`node scripts/desktop-reinstall.mjs [--profile desktop] [--dry-run]`
 
-它做三件手工容易做错的事：
+它做四件手工容易做错的事：
 
 1. **显式补 PATH**：DSH Desktop 自带 pnpm 派生子进程时不会把 `node` 放进子环境 PATH，
-   两包 `postinstall` 里的 `node …` 会一律报 `'node' 不是内部或外部命令`（实测）。
-   只补 `…/dependencies/node/bin`——**绝不把 Node 根目录加进 PATH**：该目录同时含
-   `bash.exe`/`wsl.exe`，进了 PATH 会顶掉 WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe
-   对 `\\wsl.localhost\…` 路径无法工作，会连带打断会话的 bash 工具。
-2. **保证"每个核心包只有一个版本"**：本插件的 `@deepseek-ai/dsh-tools` 是精确钉版（与
-   runtime 的 asar 副本同版本）。安装后脚本强制做副本矩阵自检，出现嵌套副本即失败退出
-   （参见知识库《DSH-rc1工具调度器与Web profile重复模块故障》：同版本号 ≠ 同模块实例）。
+   打包/安装阶段可能报 `'node' 不是内部或外部命令`。只补 `…/dependencies/node/bin`——
+   **绝不把 Node 根目录加进 PATH**：该目录同时含 `bash.exe`/`wsl.exe`，进了 PATH 会顶掉
+   WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe 对 `\\wsl.localhost\…` 路径无法工作，
+   会连带打断会话的 bash 工具。
+2. **绝不把宿主 SDK 装进 profile**：以 `--config.auto-install-peers=false` 安装，安装后审计
+   `profile/node_modules/@deepseek-ai`；出现 `dsh-tools`/`dsh-agent`/`dsh-llm`/… 即失败退出。
+   rc.3 的解析拦截层会把插件对宿主 SDK 的 import 路由到 `app.asar` 里的副本（见上文
+   「宿主 SDK 的解析」）；profile 副本反而会覆盖它、让 `tools` 服务起不来。
 3. **校正 `dsh.profile.bundles`**：依赖装了但没进 bundles 就不会加载；脚本会补齐并打印清单。
-4. **同时装上 `dsh-wsl-workspace` 需要的宿主 SDK 包**（`@deepseek-ai/dsh-fs` /
-   `dsh-fs-local` / `dsh-shell` / `dsh-tool-fs-search`，与 runtime 的 asar 同版本）。
-   Desktop 把宿主打在 `app.asar` 里，Node 向上找裸包名走不进归档，于是这些 import 全部失败、
-   WSL 变体预设生成不出来——界面症状是 `Unknown agent preset: wsl-standard`
-   （与知识库《DSH-rc1工具调度器与Web profile重复模块故障》同属"模块解析锚点"问题）。
-   装完后脚本会用 `createRequire(插件入口)` 逐个 resolve 校验，失败即报 `RESOLVE_FAIL`。
+4. **组合校验**：安装后跑 `dsh --profile <profile> --dump-config`，bundles/patch 结构有错
+   会直接失败；不再用 `createRequire` 探测宿主 SDK（那正是 rc.1 时代的过时做法）。
 
 安装完成后**重启 DSH Desktop** 生效。
 
