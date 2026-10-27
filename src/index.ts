@@ -27,7 +27,28 @@ export const name = 'openharmony-debug-test-pipeline'
 export const inject = ['skills', 'commands', 'tools', 'subagents']
 export { Config }
 
-export function apply(ctx: Context, config: Config = {}): void {
+/** 内嵌子组件（packages/gitlab-credentials）暴露的 cordis 插件形状。 */
+interface EmbeddedCredentialsPlugin {
+  name: string
+  inject: string[]
+  Config: unknown
+  apply: (ctx: Context, config?: Config['credentials']) => void
+}
+
+/**
+ * 1.5.0 起 GitLab 凭据是本插件的**内嵌子组件**，不再是独立插件：
+ * 源码仍在 packages/gitlab-credentials（与独立发布共用），构建产物随本包分发。
+ * 用相对本模块的 URL 动态加载：`src/index.ts` 与 `lib/index.js` 都在包根下一层，
+ * 同一条相对路径在开发与发布两种形态下都指向
+ * `<包根>/packages/gitlab-credentials/lib/index.js`——因此只需要带这一份构建产物，
+ * 不依赖 npm 发布，也不需要 pnpm 允许传递依赖走 git（pnpm 11 默认禁止）。
+ */
+async function loadEmbeddedCredentials(): Promise<EmbeddedCredentialsPlugin> {
+  const url = new URL('../packages/gitlab-credentials/lib/index.js', import.meta.url).href
+  return (await import(url)) as EmbeddedCredentialsPlugin
+}
+
+export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const resolved = {
     stateFile: config.stateFile ?? '~/.dsh/pipeline-state.json',
     wslPackageRoot: config.wslPackageRoot,
@@ -50,4 +71,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     `openharmony-debug-test-pipeline: OpenHarmony 调测闭环流水线插件加载完成`
     + `（宿主=${process.platform}，状态文件=${modelPaths.stateFile}）`,
   )
+  // 内嵌子组件：GitLab 凭据的宿主半侧（凭据存储、/api/dsh-gitlab-credentials 路由、
+  // gitlab_cred_status 工具、可选的系统提示段）挂到本插件同一棵树上，随本插件启停；
+  // 浏览器半侧由本包 dsh.client（lib/client.js，设置页「GitLab 凭据」分节）承担。
+  const credentials = await loadEmbeddedCredentials()
+  ;(ctx.plugin as unknown as (plugin: unknown, config?: unknown) => void)(credentials, config.credentials ?? {})
 }

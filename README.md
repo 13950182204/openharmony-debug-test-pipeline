@@ -61,17 +61,37 @@ dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
 
 ### B. 装到 DSH Desktop（GUI 会话里可用）
 
-GUI 的插件页查的是 **npm registry**，本包未发布，所以按包名搜不到（会提示「未找到相关插件」）。
-用**本地路径**安装：先 `pnpm pack` 出 tarball，再在弹窗里填 tarball 的 Windows 路径。
+**一条 GitHub 地址装全**：插件页 → **添加插件**，填
 
-必须用 tarball / Windows 侧目录，**不能用 `link:` 或 `file:` 指向 WSL 内的仓库**：
+```
+https://github.com/13950182204/openharmony-debug-test-pipeline
+```
+
+安装后只有一个 bundle。GitLab 凭据（`@superjunier/dsh-gitlab-credentials`）自 1.5.0 起是本插件的
+**内嵌子组件**：源码仍在仓库的 `packages/gitlab-credentials/`，构建产物
+`packages/gitlab-credentials/lib` 随本包分发，`apply()` 把它作为子插件挂在同一棵树里，
+浏览器半侧由本包的 `lib/client.js` 承担（设置页里仍有「GitLab 凭据」分节）。
+**不需要**再单独安装第二个插件，也不需要改 pnpm 配置（不依赖任何传递 git 依赖）。
+
+```bash
+dsh --profile desktop --dump-config | grep -A3 oh-debug-pipeline
+```
+
+> 从 1.4.x 升级：profile 里旧的独立 `@superjunier/dsh-gitlab-credentials` 依赖与 bundles
+> 选中项应当删掉（保留也不会双挂——内嵌组件有进程级单实例守卫，但两处都留着会让插件列表
+> 多出一个空 bundle）。旧 `cordis.patch.yml` 里的 `- id: gitlab-credentials` 覆盖行可以留着，
+> 没有对应行时会被忽略；凭据配置改到本行的 `config.credentials` 下（见下）。
+
+离线/内网环境仍可退回本地 tarball 安装：先 `pnpm pack`，再在弹窗里填 tarball 的
+Windows 绝对路径。必须用 tarball / Windows 侧目录，**不能用 `link:` 或 `file:` 指向
+WSL 内的仓库**：
 
 - pnpm 会把 UNC 规格改写成 `/wsl.localhost/...`（不存在的路径）；
 - 用 Windows 符号链接/junction 指到 `\\wsl.localhost\...` 也**不可行**——`Test-Path` 为真，
   但 Windows Node 无法穿越（`existsSync` 为假），插件会加载失败。
 
 装完后在 desktop profile 的 `cordis.patch.yml` 加一行 config（**否则 skill 正文里的路径是
-Windows 路径、模型在 WSL 里跑不动**）：
+Windows 路径、模型在 WSL 里跑不动**；`credentials.storeFile` 让桌面实例与 WSL 侧实例共用同一份凭据）：
 
 ```yaml
 - id: oh-debug-pipeline
@@ -80,11 +100,16 @@ Windows 路径、模型在 WSL 里跑不动**）：
     wslPackageRoot: /home/cx/os/openharmony-debug-test-pipeline
     stateFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json
     stateFileModel: /home/cx/.dsh/pipeline-state.json
+    credentials:
+      storeFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/gitlab-credentials.json
+      announceToAgent: false
 ```
 
 - `wslPackageRoot`：把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 可用路径；
 - `stateFile`：**宿主**侧 `/pipeline status` 的 Node 读取用，写成 `//wsl.localhost/...`；
-- `stateFileModel`：**模型**执行用，必须是 WSL 视角路径（`/home/cx/...`）。
+- `stateFileModel`：**模型**执行用，必须是 WSL 视角路径（`/home/cx/...`）；
+- `credentials.storeFile`：内嵌凭据组件的凭据文件（宿主可写的 WSL 视角路径）；
+- `credentials.announceToAgent`：权威实例在 WSL 侧时置 `false`，避免两处都向模型自我宣告。
 
 两者指向同一个文件（实测两侧 `stat` 与 `sha256` 一致），但**形态必须分开**：Windows 侧的
 `//wsl.localhost/...` 在 WSL 里既不存在、`python3` 还会静默退回**空状态**而不报错——
@@ -154,6 +179,7 @@ dsh --profile desktop --dump-config   # 确认 bundles/patch 组合无误
 | `stateFileModel` | 同 `stateFile` | 同上文件的**模型**执行路径；Windows 宿主上必须给成 WSL 视角路径 |
 | `wslPackageRoot` | 空 | 插件包的 WSL 路径；Windows 宿主上必填，否则 skill 正文是 Windows 路径 |
 | `reviewLadder` | 两档（pro/flash） | 六维审查子代理的模型档位表 |
+| `credentials` | 见下 | 内嵌 GitLab 凭据子组件的配置：`enabled` / `announceToAgent` / `storeFile` |
 
 可在 profile 的 `cordis.patch.yml` 覆盖该行 config，或在 web GUI
 Settings → 插件配置 中调整。

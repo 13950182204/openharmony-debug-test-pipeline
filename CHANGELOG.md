@@ -2,6 +2,41 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.5.0] - 2026-10-27
+
+**GitLab 凭据组件并入本插件：插件页填一次 GitHub 地址就能装全，零额外配置。**
+
+### 变更
+
+- `@superjunier/dsh-gitlab-credentials` 从「独立插件」改为**内嵌子组件**：源码仍在
+  `packages/gitlab-credentials/`（独立发布的包继续用同一份源码），构建产物
+  `packages/gitlab-credentials/lib` 随本包 `files` 分发。
+- 根 `apply()` 改为 async：按相对本模块的 URL 动态 import
+  `../packages/gitlab-credentials/lib/index.js`，再用 `ctx.plugin()` 把凭据的宿主半侧
+  （凭据存储、`/api/dsh-gitlab-credentials` 路由、`gitlab_cred_status` 工具、可选系统提示段）
+  挂到同一棵插件树里，随本插件启停。凭据组件自带进程级单实例守卫
+  （`mountOnce`，`globalThis` + `Symbol.for`），重复加载是 no-op。
+- 本包新增浏览器半侧：`dsh.client` 声明 + `exports["./client"]` →
+  `lib/client.js`，由 `scripts/embed-client.mjs` 在 `pnpm build` 末尾从凭据包的
+  client bundle 复制并改写 ModuleLoader 注册 id（`@superjunier/dsh-gitlab-credentials` →
+  `openharmony-debug-test-pipeline`）。设置页「GitLab 凭据」分节、令牌校验/glab 同步、
+  MR 偏好编辑全部保留。
+- `cordis.patch.yml` 只保留一行 `oh-debug-pipeline`（不再插 `gitlab-credentials` 行）。
+- 根 `Config` 新增 `credentials: { enabled, announceToAgent, storeFile }`；旧的
+  `- id: gitlab-credentials` 配置覆盖行在新版本里没有对应行、会被忽略，迁移时把
+  `storeFile` / `announceToAgent` 挪到 `oh-debug-pipeline.config.credentials` 下即可。
+- `scripts/desktop-reinstall.mjs` 同步：只安装本插件，清掉 profile 里遗留的独立凭据依赖与
+  bundles 选中项，并校验内嵌子组件与 client bundle 都已就位。
+- 为何不用「根 package.json 依赖本仓库 git 子目录（`#path:/packages/gitlab-credentials`）」：
+  pnpm 11 默认 `blockExoticSubdeps: true`，传递依赖不允许走 git/tarball，安装会被
+  `ERR_PNPM_EXOTIC_SUBDEP` 拒绝。内嵌方案不依赖 npm 发布，也不需要用户改 pnpm 配置。
+
+### 安装方式
+
+- **推荐（DSH 0.2.1-rc.3 插件页）**：添加插件 → 填
+  `https://github.com/13950182204/openharmony-debug-test-pipeline`。
+- 命令行等价：`dsh plugin --profile <profile> add github:13950182204/openharmony-debug-test-pipeline`。
+
 ## [1.4.0] - 2026-10-26
 
 **适配 DSH `0.2.1-rc.3`，并修掉“装插件把宿主 `dsh-tools` 覆盖、`tools` 服务起不来”的根因。**

@@ -21,6 +21,13 @@ export interface Config {
    */
   stateFileModel?: string
   /**
+   * 内嵌子组件 `@superjunier/dsh-gitlab-credentials` 的配置（1.5.0 起并入本包）。
+   * 不填即开箱可用：凭据文件默认 `~/.dsh/gitlab-credentials.json`。
+   * DSH Desktop（宿主 Windows、执行 WSL）形态下把 `storeFile` 指到 WSL 那份文件，
+   * 避免桌面实例与 WSL 侧 `glab` 读的凭据分叉。
+   */
+  credentials?: CredentialsComponentConfig
+  /**
    * 六维审查用的 subagent provider 名（`ctx.subagents.start()` 的第一个参数）。
    * DSH 内置：`fork`（dsh-subagent-fork-in-process 默认）、`spawn`。缺省 `fork`。
    * 注意这是 **provider 名**，不是运行标签——传错会 `no subagent provider registered`。
@@ -32,6 +39,19 @@ export interface Config {
    * 注意：reasoningEffort 是 provider 全局配置，无法按子代理区分。
    */
   reviewLadder?: LadderTier[]
+}
+
+/** 内嵌 GitLab 凭据组件（packages/gitlab-credentials）的配置。 */
+export interface CredentialsComponentConfig {
+  /** 关闭后不注册路由/工具（默认 true）。 */
+  enabled?: boolean
+  /** 是否在系统提示里向模型宣告凭据组件（默认 true）。 */
+  announceToAgent?: boolean
+  /**
+   * 凭据文件路径；缺省 `~/.dsh/gitlab-credentials.json`。
+   * Windows 宿主指向 WSL 那份时必须用 `//wsl.localhost/<发行版>/home/<用户>/.dsh/gitlab-credentials.json`。
+   */
+  storeFile?: string
 }
 
 const ladderTierSchema = z.object({
@@ -47,4 +67,9 @@ export const Config: z<Config> = z.object({
   subagentProvider: z.string().default('fork'),
   stateFileModel: z.string(),
   reviewLadder: z.array(ladderTierSchema),
+  credentials: z.object({
+    enabled: z.boolean().default(true),
+    announceToAgent: z.boolean().default(true),
+    storeFile: z.string(),
+  }),
 })

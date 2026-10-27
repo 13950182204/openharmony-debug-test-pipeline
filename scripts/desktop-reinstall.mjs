@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 在 **Windows 侧**把本插件与 `@superjunier/dsh-gitlab-credentials` 重装进 DSH Desktop 的
+ * 在 **Windows 侧**把本插件（含内嵌 GitLab 凭据子组件）重装进 DSH Desktop 的
  * desktop profile。用法（在 Windows 上跑，Node 任意 20+）：
  *
  *   node <repo>/scripts/desktop-reinstall.mjs [--profile <名字>] [--dry-run]
@@ -44,8 +44,9 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * `dir` 是打包目录；tarball 文件名沿用 pnpm pack 的规则（scope 用 `-` 连接）。
  */
 const PLUGINS = [
+  // 1.5.0 起 GitLab 凭据是本包的内嵌子组件（packages/gitlab-credentials/lib 随包分发），
+  // 不再单独打包/安装第二个插件。
   { name: 'openharmony-debug-test-pipeline', dir: REPO },
-  { name: '@superjunier/dsh-gitlab-credentials', dir: join(REPO, 'packages', 'gitlab-credentials') },
 ]
 
 /** 宿主提供、**绝不能**出现在 profile 依赖里的核心包（出现即覆盖宿主插件/服务）。 */
@@ -149,6 +150,10 @@ manifest.dsh ??= {}
 manifest.dsh.profile ??= {}
 const bundles = (manifest.dsh.profile.bundles ??= [])
 for (const { name } of entries) if (!bundles.includes(name)) bundles.push(name)
+// 1.5.0 起凭据是内嵌子组件：清掉旧版单独安装留下的依赖与 bundles 选中项。
+Reflect.deleteProperty(manifest.dependencies, '@superjunier/dsh-gitlab-credentials')
+const credentialBundleIndex = bundles.indexOf('@superjunier/dsh-gitlab-credentials')
+if (credentialBundleIndex >= 0) bundles.splice(credentialBundleIndex, 1)
 if (dryRun) {
   console.log(`[dry-run] 清单将登记 ${entries.length} 个插件，bundles=${bundles.length}`)
 } else {
@@ -163,34 +168,27 @@ const patchPath = join(profileDir, 'cordis.patch.yml')
 const PLUGIN_CONFIG = {
   'oh-debug-pipeline': {
     name: 'openharmony-debug-test-pipeline',
-    config: {
-      wslPackageRoot: '/home/cx/os/openharmony-debug-test-pipeline',
-      stateFile: '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json',
-      stateFileModel: '/home/cx/.dsh/pipeline-state.json',
-    },
-  },
-  'gitlab-credentials': {
-    name: '@superjunier/dsh-gitlab-credentials',
-    config: {
-      storeFile: '//wsl.localhost/Ubuntu-22.04/home/cx/.dsh/gitlab-credentials.json',
-      announceToAgent: false,
-    },
+    lines: [
+      '  config:',
+      '    wslPackageRoot: /home/cx/os/openharmony-debug-test-pipeline',
+      '    stateFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/pipeline-state.json',
+      '    stateFileModel: /home/cx/.dsh/pipeline-state.json',
+      '    credentials:',
+      '      storeFile: //wsl.localhost/Ubuntu-22.04/home/cx/.dsh/gitlab-credentials.json',
+      '      announceToAgent: false',
+    ],
   },
 }
 const patchText = existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : ''
 const missingConfig = Object.entries(PLUGIN_CONFIG).filter(([id]) => !patchText.includes(`id: ${id}`))
 if (missingConfig.length > 0) {
-  const block = missingConfig.map(([id, spec]) => {
-    const lines = [`- id: ${id}`, `  name: "${spec.name}"`, '  config:']
-    for (const [k, v] of Object.entries(spec.config)) lines.push(`    ${k}: ${v}`)
-    return lines.join('\n')
-  }).join('\n')
+  const block = missingConfig.map(([id, spec]) => ['- id: ' + id, '  name: "' + spec.name + '"', ...spec.lines].join('\n')).join('\n')
   if (dryRun) {
-    console.log(`[dry-run] 将补 ${missingConfig.length} 条插件配置行：${missingConfig.map(([id]) => id).join(', ')}`)
+    console.log('[dry-run] 将补 ' + missingConfig.length + ' 条插件配置行：' + missingConfig.map(([id]) => id).join(', '))
   } else {
-    copyFileSync(patchPath, `${patchPath}.bak-desktop-reinstall`)
-    writeFileSync(patchPath, `${patchText.trimEnd()}\n\n${block}\n`, 'utf8')
-    console.log(`已补插件配置行（备份：${patchPath}.bak-desktop-reinstall）：${missingConfig.map(([id]) => id).join(', ')}`)
+    copyFileSync(patchPath, patchPath + '.bak-desktop-reinstall')
+    writeFileSync(patchPath, patchText.trimEnd() + '\n\n' + block + '\n', 'utf8')
+    console.log('已补插件配置行（备份：' + patchPath + '.bak-desktop-reinstall）：' + missingConfig.map(([id]) => id).join(', '))
   }
 } else {
   console.log('插件配置行已存在，未改动')
@@ -218,6 +216,19 @@ const forbidden = auditHostSdk(nodeModules)
 if (forbidden.length > 0) {
   console.error('✗ profile 里出现了宿主核心包（会覆盖运行时插件、导致 tools 服务起不来）：', forbidden.join(', '))
   console.error('  删掉它们并重新安装：pnpm remove ' + forbidden.map((name) => `@deepseek-ai/${name}`).join(' '))
+  process.exit(1)
+}
+
+// 内嵌子组件必须随包落下：宿主半侧 + 本包 client half。
+const embeddedLib = join(nodeModules, 'openharmony-debug-test-pipeline', 'packages', 'gitlab-credentials', 'lib')
+for (const file of ['index.js', 'client.js']) {
+  if (!existsSync(join(embeddedLib, file))) {
+    console.error('✗ 内嵌凭据子组件未就位：', join(embeddedLib, file))
+    process.exit(1)
+  }
+}
+if (!existsSync(join(nodeModules, 'openharmony-debug-test-pipeline', 'lib', 'client.js'))) {
+  console.error('✗ 本包 client half 未就位：', join(nodeModules, 'openharmony-debug-test-pipeline', 'lib', 'client.js'))
   process.exit(1)
 }
 

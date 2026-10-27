@@ -19,4 +19,4 @@ import { Config } from './config.ts';
 export declare const name = "openharmony-debug-test-pipeline";
 export declare const inject: string[];
 export { Config };
-export declare function apply(ctx: Context, config?: Config): void;
+export declare function apply(ctx: Context, config?: Config): Promise<void>;

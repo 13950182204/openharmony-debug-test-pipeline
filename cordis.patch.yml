@@ -1,8 +1,17 @@
 # openharmony-debug-test-pipeline bundle patch
 #
-# 安装：dsh plugin --profile <name> add openharmony-debug-test-pipeline
+# 安装：DSH 插件页「添加插件」里填仓库地址（或命令行 dsh plugin）
+#   https://github.com/13950182204/openharmony-debug-test-pipeline
+#   dsh plugin --profile <name> add github:13950182204/openharmony-debug-test-pipeline
 # 命令会识别 dsh.bundle 声明并把本包追加进 profile 的 bundles 层栈。
+#
 # 插件加载后注册：五个 vendored 调测 skill + 一个闭环编排 skill + /pipeline 命令。
+#
+# 自 1.5.0 起，`@superjunier/dsh-gitlab-credentials` 是本插件的**内嵌子组件**而不是独立插件：
+# 源码仍在 packages/gitlab-credentials（独立发布共用同一份源码），构建后的
+# packages/gitlab-credentials/lib 随本包分发；apply() 把它作为子插件挂在同一棵树里，
+# 浏览器半侧由本包 dsh.client（lib/client.js）承担。因此插件页只有一个 bundle，
+# 凭据组件以「同一插件内的子组件」形态存在，设置页里仍有「GitLab 凭据」分节。
 - insert:
     - id: oh-debug-pipeline
       name: 'openharmony-debug-test-pipeline'
