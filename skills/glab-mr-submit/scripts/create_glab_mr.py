@@ -30,6 +30,13 @@ TEST_SECTIONS = (
     "## 测试结果:",
     "## 测试结果截图:",
 )
+# 非测试 MR 只允许 3 行左右的 `具体:`；测试记录保留完整结构，但限制篇幅，避免把根因、证据、
+# 文件清单堆进 commit/MR 正文。默认值可用同名命令行参数覆盖。
+DEFAULT_MAX_TITLE_CHARS = 30
+DEFAULT_MAX_BODY_LINES = 5
+DEFAULT_MAX_BODY_CHARS = 150
+DEFAULT_MAX_TEST_BODY_LINES = 25
+DEFAULT_MAX_TEST_BODY_CHARS = 2000
 
 
 class MrError(Exception):
@@ -222,6 +229,74 @@ def validate_message(subject, body, files, screenshot_paths=None):
     if markdown_record:
         validate_markdown_record(body, screenshot_paths)
     return related
+
+
+def validate_message_size(subject, body, markdown_record, args):
+    """限制标题与正文篇幅：非测试 MR 只留 3 行，测试记录保留结构但禁止堆砌。"""
+    title_info = parse_title(subject)
+    summary = title_info["summary"]
+    if len(summary) > args.max_title_chars:
+        raise MrError(
+            f"MR title summary is {len(summary)} chars, limit is {args.max_title_chars}: {summary!r}. "
+            "Keep one short problem or action in the title."
+        )
+    content_lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if markdown_record:
+        total_chars = len("".join(content_lines))
+        if len(content_lines) > args.max_test_body_lines:
+            raise MrError(
+                f"Test MR body has {len(content_lines)} lines, limit is {args.max_test_body_lines}; "
+                "trim each record section to at most two lines."
+            )
+        if total_chars > args.max_test_body_chars:
+            raise MrError(
+                f"Test MR body has {total_chars} chars, limit is {args.max_test_body_chars}; "
+                "keep only the essentials of each section."
+            )
+        return
+    detail_lines = [line.strip() for line in body.split("具体:", 1)[1].splitlines() if line.strip()]
+    detail_chars = len("".join(detail_lines))
+    if len(detail_lines) > args.max_body_lines:
+        raise MrError(
+            f"Commit detail after '具体:' has {len(detail_lines)} lines, limit is {args.max_body_lines}: "
+            "write reason, change and verification in at most one line each."
+        )
+    if detail_chars > args.max_body_chars:
+        raise MrError(
+            f"Commit detail after '具体:' has {detail_chars} chars, limit is {args.max_body_chars}; "
+            "move file lists, call chains and risk notes out of the commit message."
+        )
+    forbidden = [heading for heading in TEST_SECTIONS if heading != "## 具体:" and heading in body]
+    if forbidden:
+        raise MrError(
+            "Non-test MR must not contain test-record sections: "
+            + ", ".join(forbidden)
+            + ". Keep a 3-line '具体:', or add real test evidence so it becomes a test MR."
+        )
+
+
+def extract_review_summary(path):
+    """从 /ponytail-review 的输出里抽『这次改动做了什么』段落，供填写 具体: 时对照。"""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    marker = next((index for index, line in enumerate(lines) if "这次改动做了什么" in line), None)
+    if marker is None:
+        raise MrError(f"--from-review file has no '这次改动做了什么' section: {path}")
+    snippet = []
+    for line in lines[marker + 1:]:
+        stripped = line.strip().lstrip("-* ").replace("**", "")
+        if not stripped:
+            if snippet:
+                break
+            continue
+        if stripped.startswith("#"):
+            break
+        snippet.append(stripped)
+        if len(snippet) >= 3:
+            break
+    if not snippet:
+        raise MrError(f"--from-review section is empty: {path}")
+    return " ".join(snippet)
 
 
 def append_screenshot_links(body, links):
@@ -856,6 +931,8 @@ def execute(args):
     ensure_screenshot_files(screenshot_paths)
     title_info = parse_title(subject)
     related = validate_message(subject, body, files, screenshot_paths)
+    validate_message_size(subject, body, related, args)
+    review_snippet = extract_review_summary(args.from_review) if args.from_review else None
     labels = resolve_labels(title_info, args.label or prefs.get("labels") or None)
     ensure_only_files_changed(repo, files)
     ensure_files_changed(repo, files)
@@ -906,6 +983,9 @@ def execute(args):
     print("Planned glab MR submission:")
     for key in ("repo", "current_branch", "remote", "base_ref", "target_branch", "source_branch", "assignee", "test_related", "mr_title", "labels", "milestone", "milestone_reason"):
         print(f"{key}: {summary[key]}")
+    if review_snippet:
+        print("from_review_snippet:")
+        print(review_snippet)
     print("mr_description:")
     print(body)
     print("screenshots:")
@@ -924,6 +1004,7 @@ def execute(args):
     screenshot_links = upload_screenshots(repo, remote, hostname, screenshot_paths) if screenshot_paths else []
     body = append_screenshot_links(body, screenshot_links)
     validate_message(subject, body, files, screenshot_paths)
+    validate_message_size(subject, body, True, args)
     final_message = f"{subject}\n\n{body}\n"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, prefix="glab-mr-message-", suffix=".txt") as message_file:
         message_file.write(final_message)
@@ -958,6 +1039,12 @@ def main():
     parser.add_argument("--label", action="append", help="Additional label(s), comma-separated; repeat for multiple values")
     parser.add_argument("--milestone", help="Explicit active milestone title, global ID, or IID; otherwise infer non-blockingly")
     parser.add_argument("--screenshot", action="append", help="Local test-result screenshot to upload; repeat for multiple images")
+    parser.add_argument("--max-title-chars", type=int, default=DEFAULT_MAX_TITLE_CHARS, help="Max chars of the title summary after the bracket fields")
+    parser.add_argument("--max-body-lines", type=int, default=DEFAULT_MAX_BODY_LINES, help="Max content lines of '具体:' for non-test MRs")
+    parser.add_argument("--max-body-chars", type=int, default=DEFAULT_MAX_BODY_CHARS, help="Max content chars of '具体:' for non-test MRs")
+    parser.add_argument("--max-test-body-lines", type=int, default=DEFAULT_MAX_TEST_BODY_LINES, help="Max content lines of a test-record MR body")
+    parser.add_argument("--max-test-body-chars", type=int, default=DEFAULT_MAX_TEST_BODY_CHARS, help="Max content chars of a test-record MR body")
+    parser.add_argument("--from-review", help="Path to /ponytail-review output; prints its '这次改动做了什么' snippet as a cross-check before composing the body")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print actions without mutating git or GitLab")
     args = parser.parse_args()
     try:
