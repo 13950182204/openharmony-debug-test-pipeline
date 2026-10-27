@@ -33,8 +33,8 @@ TEST_SECTIONS = (
 # 非测试 MR 只允许 3 行左右的 `具体:`；测试记录保留完整结构，但限制篇幅，避免把根因、证据、
 # 文件清单堆进 commit/MR 正文。默认值可用同名命令行参数覆盖。
 DEFAULT_MAX_TITLE_CHARS = 30
-DEFAULT_MAX_BODY_LINES = 5
-DEFAULT_MAX_BODY_CHARS = 150
+DEFAULT_MAX_BODY_LINES = 4
+DEFAULT_MAX_BODY_CHARS = 200
 DEFAULT_MAX_TEST_BODY_LINES = 25
 DEFAULT_MAX_TEST_BODY_CHARS = 2000
 
@@ -232,7 +232,7 @@ def validate_message(subject, body, files, screenshot_paths=None):
 
 
 def validate_message_size(subject, body, markdown_record, args):
-    """限制标题与正文篇幅：非测试 MR 只留 3 行，测试记录保留结构但禁止堆砌。"""
+    """限制标题与正文篇幅：非测试 MR 推荐 3 行、最多 4 行，测试记录保留结构但禁止堆砌。"""
     title_info = parse_title(subject)
     summary = title_info["summary"]
     if len(summary) > args.max_title_chars:
