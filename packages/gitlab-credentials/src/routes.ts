@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { isLoopbackRequest } from './loopback.ts'
 import { API_PREFIX, type CredentialRecord, type MrPreferences } from './protocol.ts'
-import { glabAuthed, glabLogin, glabLogout, validateToken } from './glab.ts'
+import { glabAuthed, glabLogin, glabLogout, glabProbe, glabVerify, validateToken } from './glab.ts'
 import type { CredentialStore } from './store.ts'
 
 /** Cap on JSON request bodies (credentials + preferences are small). */
@@ -55,10 +55,14 @@ function hostValue(value: unknown): string {
 
 export interface CredentialRoutesDeps {
   store: CredentialStore
+  /** Optional override for locating/invoking glab (see glab.ts). */
+  glabCommand?: string
 }
 
 export function makeRoutes(deps: CredentialRoutesDeps): { routes: WebRoute[] } {
   const { store } = deps
+  /** Options forwarded to every glab invocation (runner resolution is cached there). */
+  const glabOptions = { glabCommand: deps.glabCommand }
 
   /** Guard helper: fence + method + JSON body. */
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
@@ -81,9 +85,14 @@ export function makeRoutes(deps: CredentialRoutesDeps): { routes: WebRoute[] } {
         if (!guard(req, res, 'GET')) return
         const summaries = await Promise.all(store.summaries().map(async summary => ({
           ...summary,
-          glabAuthed: await glabAuthed(summary.host).catch(() => false),
+          glabAuthed: await glabAuthed(summary.host, glabOptions).catch(() => false),
         })))
-        writeJson(res, 200, { hosts: summaries, mrPreferences: store.mrPreferences() })
+        // Runner probe lets the settings page say *where* tokens are synced to
+        // (e.g. the WSL bridge on a Windows host) and why sync is unavailable.
+        const glab = await glabProbe(glabOptions).catch(error => ({
+          available: false, describe: '', error: (error as Error).message,
+        }))
+        writeJson(res, 200, { hosts: summaries, mrPreferences: store.mrPreferences(), glab })
       },
     },
     {
@@ -122,19 +131,23 @@ export function makeRoutes(deps: CredentialRoutesDeps): { routes: WebRoute[] } {
             lastError: '',
           }
           store.upsert(record)
-          // Sync into glab (best-effort: glab may be absent; the store remains authoritative).
+          // Sync into glab and read the account back afterwards: a stored token
+          // that never reached the CLI is exactly the failure this step catches.
+          let glabSynced = false
+          let glabVerified = false
+          let glabUser = ''
           let glabError = ''
           try {
-            await glabLogin(host, apiProtocol, gitProtocol, token)
+            await glabLogin(host, apiProtocol, gitProtocol, token, glabOptions)
+            glabSynced = true
+            const verified = await glabVerify(host, user, glabOptions)
+            glabVerified = verified.verified
+            glabUser = verified.user
+            glabError = verified.error
           } catch (error) {
             glabError = (error as Error).message
           }
-          writeJson(res, 200, {
-            host,
-            user,
-            glabError,
-            glabAuthed: glabError === '' ? await glabAuthed(host).catch(() => false) : false,
-          })
+          writeJson(res, 200, { host, user, glabSynced, glabVerified, glabUser, glabError })
         } catch (error) {
           const message = (error as Error).message.replace(/[A-Za-z0-9_-]{20,}/g, '<redacted>')
           writeJson(res, 400, { error: message })
@@ -157,7 +170,7 @@ export function makeRoutes(deps: CredentialRoutesDeps): { routes: WebRoute[] } {
           return
         }
         const removed = store.remove(host)
-        await glabLogout(host).catch(() => undefined)
+        await glabLogout(host, glabOptions).catch(() => undefined)
         writeJson(res, 200, { removed })
       },
     },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { joinModelPath, resolveModelPaths } from '../src/wsl-paths.ts'
-import { registerVendoredSkills } from '../src/vendor.ts'
+import { VENDORED_SKILLS, registerVendoredSkills } from '../src/vendor.ts'
 import { buildLoopSkill } from '../src/loop-skill.ts'
 
 const HOST_ROOT = '\\\\wsl.localhost\\Ubuntu-22.04\\home\\cx\\os\\openharmony-debug-test-pipeline'
@@ -81,7 +81,7 @@ describe('Windows 宿主下的 skill 正文口径', () => {
   it('registerVendoredSkills 的 {{SKILLS_DIR}} 用 WSL 路径渲染', () => {
     captured.length = 0
     registerVendoredSkills(ctx, { wslPackageRoot: WSL_ROOT })
-    expect(captured).toHaveLength(5)
+    expect(captured).toHaveLength(VENDORED_SKILLS.length)
     for (const reg of captured) {
       // 每个模块 skill 的正文都带「技能资源」尾注（技能目录来自 {{SKILLS_DIR}}）
       expect(reg.content).toContain('## 技能资源')

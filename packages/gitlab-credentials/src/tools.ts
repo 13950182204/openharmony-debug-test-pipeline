@@ -35,6 +35,11 @@ export function gitlabCredStatusTool(store: CredentialStore) {
               additionalProperties: false,
               properties: {
                 host: { type: 'string', required: true },
+                // DSH 1.6.0：store.summaries() 会带上这三个字段（host 形态），
+                // schema 未声明时整次工具调用被 additionalProperties:false 拒绝。
+                apiProtocol: { type: 'string' },
+                apiHost: { type: 'string' },
+                gitProtocol: { type: 'string' },
                 user: { type: 'string', required: true },
                 hasToken: { type: 'boolean', required: true },
                 fingerprint: { type: 'string', required: true },

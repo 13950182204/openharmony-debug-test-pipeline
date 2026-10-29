@@ -1,9 +1,9 @@
 import z from "schemastery";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 //#region src/protocol.ts
 /**
@@ -216,30 +216,143 @@ function isLoopbackRequest(request) {
 //#region src/which.ts
 /**
 * Minimal PATH lookup for a binary name (avoids a shell dependency).
+*
+* Cross-platform on purpose: DSH Desktop runs the host half on Windows, where
+* PATH is `;`-separated, entries are absolute `C:\...` paths and executables
+* carry a PATHEXT suffix. Splitting on `:` (the POSIX assumption) never found
+* anything there, which is why the glab sync always reported "binary not found".
 */
+/** Executable suffixes tried on Windows when the name has no extension. */
+const WINDOWS_EXTS = [
+	".exe",
+	".cmd",
+	".bat",
+	".com"
+];
 /** Search PATH for an executable; returns its absolute path or undefined. */
 function which(binary) {
 	const pathVar = process.env.PATH ?? "";
-	for (const dir of pathVar.split(":")) {
+	const names = process.platform === "win32" && !/\.[A-Za-z0-9]+$/.test(binary) ? [binary, ...WINDOWS_EXTS.map((ext) => `${binary}${ext}`)] : [binary];
+	for (const dir of pathVar.split(delimiter)) {
 		if (dir === "") continue;
-		const candidate = `${dir}/${binary}`;
-		try {
-			if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-		} catch {}
+		for (const name of names) {
+			const candidate = join(dir, name);
+			try {
+				if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+			} catch {}
+		}
 	}
 }
 //#endregion
 //#region src/glab.ts
 /**
 * GitLab + glab integration: token validation against the GitLab API and
-* glab CLI session sync. The token is passed to the glab child process over
-* STDIN only — never as a command-line argument, never logged, never written
-* to any repository or MR artifact.
+* glab CLI session sync (login -> read-back verification). The token is
+* passed to the glab child process over STDIN only — never as a command-line
+* argument, never logged, never written to any repository or MR artifact.
+*
+* Host shape matters: DSH Desktop runs this plugin on **Windows**, where glab
+* usually only exists inside WSL. On that shape the runner transparently
+* bridges through `wsl.exe -e bash -lc 'glab ...'` (token still travels over
+* stdin), so "保存并校验" ends with a working glab session instead of a
+* permanent "glab 未同步" badge.
 */
+/** Quote one argv element for a POSIX shell (shell-prefixed runners only). */
+function shellQuote(value) {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+/** Shell-style split of a configured command line (no quoting: keep it simple). */
+function splitWords(commandLine) {
+	return commandLine.trim().split(/\s+/).filter((word) => word !== "");
+}
+/** POSIX install locations worth trying when PATH lookup fails. */
+const POSIX_FALLBACKS = [
+	"/snap/glab/current/glab",
+	"/usr/local/bin/glab",
+	"/usr/bin/glab",
+	"/opt/homebrew/bin/glab"
+];
 /**
-* Validate a token against GET /api/v4/user. Returns the username and scope
-* info; throws with a human-readable message on failure. The token never
-* appears in the error text.
+* On a Windows host glab normally lives inside WSL. Probe the default distro
+* once; when found, run every glab invocation through a login shell there.
+*/
+function windowsWslRunner() {
+	if (process.platform !== "win32") return void 0;
+	let probe;
+	try {
+		probe = spawnSync("wsl.exe", [
+			"-e",
+			"bash",
+			"-lc",
+			"command -v glab"
+		], {
+			encoding: "utf8",
+			timeout: 1e4,
+			windowsHide: true
+		});
+	} catch {
+		return;
+	}
+	if (probe.status !== 0 || (probe.stdout ?? "").trim() === "") return void 0;
+	return {
+		command: "wsl.exe",
+		describe: "wsl.exe -e bash -lc glab",
+		argv: (glabArgs) => [
+			"-e",
+			"bash",
+			"-lc",
+			`glab ${glabArgs.map(shellQuote).join(" ")}`
+		]
+	};
+}
+/** Resolve the runner for this host + options; undefined when glab is unavailable. */
+function resolveRunner(options) {
+	const override = options.glabCommand?.trim() ?? "";
+	if (override !== "") {
+		const words = splitWords(override);
+		if (words.length > 1) {
+			const [command, ...prefix] = words;
+			return {
+				command,
+				describe: override,
+				argv: (glabArgs) => [...prefix, `glab ${glabArgs.map(shellQuote).join(" ")}`]
+			};
+		}
+		return {
+			command: words[0],
+			describe: words[0],
+			argv: (glabArgs) => glabArgs
+		};
+	}
+	const fromPath = which("glab");
+	if (fromPath !== void 0) return {
+		command: fromPath,
+		describe: fromPath,
+		argv: (glabArgs) => glabArgs
+	};
+	for (const candidate of POSIX_FALLBACKS) try {
+		if (existsSync(candidate)) return {
+			command: candidate,
+			describe: candidate,
+			argv: (glabArgs) => glabArgs
+		};
+	} catch {}
+	return windowsWslRunner();
+}
+/** Resolved runners are cached per option value (the WSL probe is not free). */
+const runnerCache = /* @__PURE__ */ new Map();
+function runnerFor(options) {
+	const key = options.glabCommand?.trim() ?? "";
+	if (!runnerCache.has(key)) runnerCache.set(key, resolveRunner(options));
+	return runnerCache.get(key);
+}
+/** Description of the runner for the settings page, or '' when none resolved. */
+function describeGlab(options = {}) {
+	return runnerFor(options)?.describe ?? "";
+}
+/**
+* Validate a token against GET /api/v4/user. Returns the username; throws with
+* a human-readable message on failure. The token never appears in the error text.
 */
 async function validateToken(apiProtocol, apiHost, token) {
 	const url = `${apiHost === "" ? "" : `${apiProtocol}://${apiHost}`}/api/v4/user`;
@@ -263,35 +376,36 @@ async function validateToken(apiProtocol, apiHost, token) {
 		scopes: []
 	};
 }
-/** Locate the glab binary (PATH first, then the snap path). */
-function resolveGlab() {
-	const fromPath = which("glab");
-	if (fromPath !== void 0) return fromPath;
-	for (const candidate of [
-		"/snap/glab/current/glab",
-		"/usr/local/bin/glab",
-		"/usr/bin/glab"
-	]) try {
-		if (existsSync(candidate)) return candidate;
-	} catch {}
-}
 /** Run glab with args, feeding `input` to STDIN; resolves with stdout. */
-function runGlab(args, input) {
+function runGlab(glabArgs, input, options = {}) {
 	return new Promise((resolve) => {
-		const binary = resolveGlab();
-		if (binary === void 0) {
+		const runner = runnerFor(options);
+		if (runner === void 0) {
 			resolve({
 				code: 127,
 				stdout: "",
-				stderr: "glab binary not found"
+				stderr: "glab not found: missing on PATH and no WSL session to bridge to (set credentials.glabCommand to override)"
 			});
 			return;
 		}
-		const child = spawn(binary, args, { stdio: [
-			"pipe",
-			"pipe",
-			"pipe"
-		] });
+		let child;
+		try {
+			child = spawn(runner.command, runner.argv(glabArgs), {
+				stdio: [
+					"pipe",
+					"pipe",
+					"pipe"
+				],
+				windowsHide: true
+			});
+		} catch (error) {
+			resolve({
+				code: 127,
+				stdout: "",
+				stderr: error.message
+			});
+			return;
+		}
 		let stdout = "";
 		let stderr = "";
 		child.stdout.on("data", (chunk) => {
@@ -300,6 +414,11 @@ function runGlab(args, input) {
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString("utf8");
 		});
+		child.on("error", (error) => resolve({
+			code: 127,
+			stdout,
+			stderr: error.message
+		}));
 		child.on("close", (code) => resolve({
 			code: code ?? -1,
 			stdout,
@@ -310,11 +429,15 @@ function runGlab(args, input) {
 		child.stdin.end();
 	});
 }
+/** One-line error text from a glab run (never contains the token). */
+function errorText(result) {
+	return result.stderr.trim().split("\n").pop() || result.stdout.trim() || `exit ${result.code}`;
+}
 /**
 * Log the token into the glab CLI for one host. Token flows over STDIN to
 * `glab auth login --stdin`; the command arguments never carry it.
 */
-async function glabLogin(host, apiProtocol, gitProtocol, token) {
+async function glabLogin(host, apiProtocol, gitProtocol, token, options = {}) {
 	const result = await runGlab([
 		"auth",
 		"login",
@@ -327,26 +450,75 @@ async function glabLogin(host, apiProtocol, gitProtocol, token) {
 		"--git-protocol",
 		gitProtocol,
 		"--stdin"
-	], `${token}\n`);
-	if (result.code !== 0) throw new Error(`glab auth login failed (exit ${result.code}): ${result.stderr.trim() || result.stdout.trim() || "unknown error"}`);
+	], `${token}\n`, options);
+	if (result.code !== 0) throw new Error(`glab auth login failed (${errorText(result)})`);
 }
 /** Log out one host from glab (best-effort; ignores missing sessions). */
-async function glabLogout(host) {
+async function glabLogout(host, options = {}) {
 	await runGlab([
 		"auth",
 		"logout",
 		"--hostname",
 		host
-	]);
+	], void 0, options);
 }
 /** Whether glab currently reports an authenticated session for the host. */
-async function glabAuthed(host) {
+async function glabAuthed(host, options = {}) {
 	return (await runGlab([
 		"auth",
 		"status",
 		"--hostname",
 		host
-	])).code === 0;
+	], void 0, options)).code === 0;
+}
+/** Whether glab itself is usable here (binary + working bridge). */
+async function glabProbe(options = {}) {
+	const result = await runGlab(["--version"], void 0, options);
+	return {
+		available: result.code === 0,
+		describe: describeGlab(options),
+		error: result.code === 0 ? "" : errorText(result)
+	};
+}
+/**
+* Read the account glab actually acts as for one host and compare it with the
+* token owner we validated. This is the "同步后验证" step: a successful
+* `auth login` exit code alone does not prove the CLI picked the new token up.
+*/
+async function glabVerify(host, expectedUser, options = {}) {
+	const result = await runGlab([
+		"api",
+		"--hostname",
+		host,
+		"user"
+	], void 0, options);
+	if (result.code !== 0) return {
+		verified: false,
+		user: "",
+		error: `glab 回读失败：${errorText(result)}`
+	};
+	let body = null;
+	try {
+		body = JSON.parse(result.stdout);
+	} catch {
+		body = null;
+	}
+	const user = typeof body?.username === "string" ? body.username : "";
+	if (user === "") return {
+		verified: false,
+		user,
+		error: "glab 回读失败：无法解析当前登录用户"
+	};
+	if (expectedUser !== "" && user !== expectedUser) return {
+		verified: false,
+		user,
+		error: `glab 当前登录用户为 ${user}，与令牌用户 ${expectedUser} 不一致`
+	};
+	return {
+		verified: true,
+		user,
+		error: ""
+	};
 }
 //#endregion
 //#region src/routes.ts
@@ -390,6 +562,8 @@ function hostValue(value) {
 }
 function makeRoutes(deps) {
 	const { store } = deps;
+	/** Options forwarded to every glab invocation (runner resolution is cached there). */
+	const glabOptions = { glabCommand: deps.glabCommand };
 	/** Guard helper: fence + method + JSON body. */
 	const guard = (req, res, method) => {
 		if (!isLoopbackRequest(req)) {
@@ -408,12 +582,19 @@ function makeRoutes(deps) {
 			path: `${API_PREFIX}/status`,
 			handler: async (req, res) => {
 				if (!guard(req, res, "GET")) return;
+				const summaries = await Promise.all(store.summaries().map(async (summary) => ({
+					...summary,
+					glabAuthed: await glabAuthed(summary.host, glabOptions).catch(() => false)
+				})));
+				const glab = await glabProbe(glabOptions).catch((error) => ({
+					available: false,
+					describe: "",
+					error: error.message
+				}));
 				writeJson(res, 200, {
-					hosts: await Promise.all(store.summaries().map(async (summary) => ({
-						...summary,
-						glabAuthed: await glabAuthed(summary.host).catch(() => false)
-					}))),
-					mrPreferences: store.mrPreferences()
+					hosts: summaries,
+					mrPreferences: store.mrPreferences(),
+					glab
 				});
 			}
 		},
@@ -453,17 +634,27 @@ function makeRoutes(deps) {
 						lastError: ""
 					};
 					store.upsert(record);
+					let glabSynced = false;
+					let glabVerified = false;
+					let glabUser = "";
 					let glabError = "";
 					try {
-						await glabLogin(host, apiProtocol, gitProtocol, token);
+						await glabLogin(host, apiProtocol, gitProtocol, token, glabOptions);
+						glabSynced = true;
+						const verified = await glabVerify(host, user, glabOptions);
+						glabVerified = verified.verified;
+						glabUser = verified.user;
+						glabError = verified.error;
 					} catch (error) {
 						glabError = error.message;
 					}
 					writeJson(res, 200, {
 						host,
 						user,
-						glabError,
-						glabAuthed: glabError === "" ? await glabAuthed(host).catch(() => false) : false
+						glabSynced,
+						glabVerified,
+						glabUser,
+						glabError
 					});
 				} catch (error) {
 					writeJson(res, 400, { error: error.message.replace(/[A-Za-z0-9_-]{20,}/g, "<redacted>") });
@@ -486,7 +677,7 @@ function makeRoutes(deps) {
 					return;
 				}
 				const removed = store.remove(host);
-				await glabLogout(host).catch(() => void 0);
+				await glabLogout(host, glabOptions).catch(() => void 0);
 				writeJson(res, 200, { removed });
 			}
 		},
@@ -548,6 +739,9 @@ function gitlabCredStatusTool(store) {
 									type: "string",
 									required: true
 								},
+								apiProtocol: { type: "string" },
+								apiHost: { type: "string" },
+								gitProtocol: { type: "string" },
 								user: {
 									type: "string",
 									required: true
@@ -667,7 +861,8 @@ const SETTINGS_NAMESPACE = SETTINGS_NS;
 const Config = z.object({
 	announceToAgent: z.boolean().default(true),
 	enabled: z.boolean().default(true),
-	storeFile: z.string()
+	storeFile: z.string(),
+	glabCommand: z.string()
 });
 const DEFAULT_ANNOUNCE = true;
 /** Order of the announcement section within the tool-guidance band. */
@@ -684,7 +879,10 @@ function applyImpl(ctx, config) {
 	});
 	const storeFile = config?.storeFile;
 	const store = new CredentialStore(storeFile !== void 0 && storeFile !== "" ? { filePath: storeFile } : {});
-	const { routes } = makeRoutes({ store });
+	const { routes } = makeRoutes({
+		store,
+		glabCommand: config?.glabCommand
+	});
 	let disposeRoutes;
 	let disposeTools;
 	let disposeSection;

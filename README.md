@@ -18,6 +18,7 @@ OpenHarmony「修改-调试-测试」闭环 DSH 插件（运行时插件，bundl
 | `openharmony-ci-orchestrator` | 平台 CI 观察与认领：读 GitLab 流水线、认领 Jenkins 门禁构建产物、phase-3 OTA/回归交接（**不触发构建**） | 「认领平台 CI 的构建并做 OTA」 |
 | `openharmony-ota-upgrade` | OTA 升级闭环：预检、hdc 传输、updater、回连验证 | 「OTA 升级到设备」 |
 | `openharmony-debug-loop` | **闭环编排**（本插件新增）：八阶段状态机串联以上模块 | 「跑一遍完整闭环」 |
+| `openharmony-demo-loop` | **演示模式**：客户/评审面前 10 分钟走完八阶段，真跑与预置证据都明说，独立状态不污染真实流水线 | 「演示模式，用 mr260 跑一遍」 |
 
 闭环状态机：
 
@@ -180,6 +181,8 @@ dsh --profile desktop --dump-config   # 确认 bundles/patch 组合无误
 | `wslPackageRoot` | 空 | 插件包的 WSL 路径；Windows 宿主上必填，否则 skill 正文是 Windows 路径 |
 | `reviewLadder` | 两档（pro/flash） | 六维审查子代理的模型档位表 |
 | `credentials` | 见下 | 内嵌 GitLab 凭据子组件的配置：`enabled` / `announceToAgent` / `storeFile` |
+| `demoStateFile` | `~/.dsh/demo/state.json` | 演示模式状态文件（宿主读）；与 `stateFile` 完全独立 |
+| `demoStateFileModel` | 同 `demoStateFile` | 演示模式状态文件（模型口径），理由同 `stateFileModel` |
 
 可在 profile 的 `cordis.patch.yml` 覆盖该行 config，或在 web GUI
 Settings → 插件配置 中调整。
@@ -194,6 +197,12 @@ Settings → 插件配置 中调整。
   `OpenHarmony-V6.1-MR-Gate` → `OpenHarmony-V6.1-MR-<芯片>`）自动跑门禁并归档固件/OTA；
   本插件只**只读观察**并**按 MR 身份认领**那次构建的产物，用于后续自动 OTA 与回归。
 - **流水线状态**：`/pipeline status` 查询当前阶段与产物；`/pipeline reset` 重置。
+- **演示模式**（对外演示专用，`~/.dsh/demo/` 独立状态，**绝不写真实流水线状态**）：
+  `python3 scripts/demo/democtl.py preflight --case mr260` 做 8 项环境预检；
+  `start --case mr260 --lane a` 起一条可跑通八阶段的演示线；`/demo status` 看进度与
+  产物来源（● live / ◐ local-staged / ○ recorded）。完整 runbook 见
+  `docs/演示模式.md`，脚本说明见 `scripts/demo/README.md`，配套 skill
+  `openharmony-demo-loop`。
 
 模型在每个阶段结束时通过 `scripts/pipeline_state.py` 把产物（`set`）、事件（`note`）与
 **token 用量快照**（`tokens <stage>`，读取 `~/.dsh/storages/session_projcache.json` 中当前

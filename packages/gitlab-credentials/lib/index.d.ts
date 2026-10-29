@@ -22,6 +22,13 @@ interface Config {
    * 该值在插件启动时读取一次，改动后需重启宿主。
    */
   storeFile?: string;
+  /**
+   * glab 执行方式覆盖（一般不需要配）。Windows 宿主默认自动探测 WSL 里的 glab；
+   * 装在非常规位置或要指定发行版时可写成：
+   * - 单个词 = glab 可执行文件路径（如 `/snap/bin/glab`）
+   * - 多个词 = 前缀，glab 的参数接在其后（如 `wsl.exe -d Ubuntu-22.04 -e bash -lc`）
+   */
+  glabCommand?: string;
 }
 declare const Config: z<Config>;
 /** Model-facing announcement: plugin presence, capabilities, and limits. */

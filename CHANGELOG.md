@@ -2,6 +2,73 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.6.2] - 2026-10-29
+
+**GitLab 凭据：真正把令牌同步进 glab 并回读验证；设置页状态不漏字、不只靠颜色。**
+
+- `packages/gitlab-credentials/src/which.ts`：改用 `node:path.delimiter` 拆 PATH，Windows 下补
+  `.exe/.cmd/.bat/.com` 后缀——原先按 `:` 拆分 + 拼 `/`，在宿主（Windows）上永远找不到 glab，
+  于是「保存并校验」只更新了凭据文件，glab 从未同步。
+- `packages/gitlab-credentials/src/glab.ts`：新增 Windows→WSL 桥接（`wsl.exe -e bash -lc`，
+  令牌仍走 stdin，不落到命令行）；`glabProbe()` 报告 glab 可用性与执行方式，`glabVerify()` 用
+  `glab api user` 回读当前登录用户并与令牌用户比对；新增可选配置 `glabCommand` 覆盖执行方式
+  （单个词=二进制路径，多个词=wsl/sudo 之类前缀）。
+- `save` 响应改为 `glabSynced` / `glabVerified` / `glabUser` / `glabError`；删除凭据时同步执行
+  `glab auth logout`；`status` 增加 `glab` 探测结果。
+- 设置页：状态表格固定列宽 + 单元格 `nowrap`（修「用 户」「令 牌」「已 存」竖排/折行），
+  「校验」「glab」拆成两个带圆点文字徽标（不只靠颜色表达状态），时间改 `YYYY-MM-DD HH:mm`，
+  表单控件补 `htmlFor/id` 与删除按钮可访问名，保存结果按同步/验证结果给出明确文案。
+
+## [1.6.1] - 2026-10-29
+
+**彩排修正：把第一次真跑踩到的三处坑写进脚本与文档。**
+
+- `scripts/demo/regression_fast.py`：`--session-root` 落在 WSL 私有路径（`~/.dsh/demo/...`）时
+  自动改到 `<runner_dir>/reports/demo` 并打印注意项；证据 JSON 仍写回演示 run 目录。
+  原先的硬失败会打断演示（Windows 侧 xdevice 读 UNC 路径枚举到 0 台设备）。
+- `scripts/desktop-reinstall.mjs`：宿主核心包审计区分「本插件装的」与「别的插件带入的」——
+  后者只告警，不再在装完后 exit 1，从而保证 bundles/配置校验与 `--dump-config` 仍会执行。
+- 文档补第一次彩排实测：report 1s、ci 19s、ota 17s、regression PASS 16/16 · 60s、全程 1:32
+  （fix 为 dry-run）；`docs/演示模式.md` 同时记录两个踩坑与 `--session-root` 行为。
+
+## [1.6.0] - 2026-10-29
+
+**演示模式：10 分钟从一份失败报告走到回归验证，真跑的地方真跑、预置的地方明说。**
+
+### 新增
+
+- `scripts/demo/democtl.py`：演示状态机（与真实闭环同八阶段），`~/.dsh/demo/state.json`
+  独立状态，**绝不写** `~/.dsh/pipeline-state.json` 与 ci-orchestrator 状态目录；
+  子命令 `preflight / start / stage / next / status / checklist / snapshot / reset`，
+  每个产物带来源标记 `live` / `local-staged` / `recorded`，整体可标 `degraded`。
+  预检 8 项（报告、修复件、门禁包、门禁脚本、设备、回归运行器、GitLab、磁盘）约 2 秒。
+- `scripts/demo/gate_stage.py`：演示门禁——本地出包 + 门禁产物契约（`build.json` /
+  `mr-metrics.tsv` / `artifacts/update.zip`），用真实门禁预检脚本校验 sha256 交叉一致，
+  末行固定声明「本地出包契约替代」，不伪造 Jenkins 构建号。
+- `scripts/demo/regression_fast.py`：快速回归——复用 `phase3_runner.run_xts_rerun` 与
+  `test_harness.verdict`，自动按设备覆盖 `config/user_config.xml` 的 `<sn>`，
+  实测单模块 PASS 16/16 · 62s。
+- `scripts/demo/deploy_fix.py`：修复件校验与部署（push → 备份 → 覆盖 → reboot → 回连
+  → sha256 比对 → 版本确认），`--dry-run` 只校验不动作。
+- `scripts/demo/cases/mr260.json`：演示用例（真实报告、两簇根因、修复件哈希、MR260、
+  预置 OTA 包、回归模块与实测耗时），含 8 阶段口播与预算。
+- `skills/openharmony-demo-loop`：演示模式 skill（runbook、硬边界、降级矩阵）。
+- `/demo status|reset` 命令与 `demoStateFile` / `demoStateFileModel` 配置：在会话里
+  直接看演示进度与产物来源。
+
+### 修复
+
+- `scripts/demo/regression_fast.py`：`<sn>` 覆盖后没写回 `profile["config"]`，xdevice
+  仍读共享配置导致 `0 devices were found`；现在把补丁配置写回 profile，并强制
+  `runner_host=windows` 时 `--session-root` 必须在 `/mnt/<盘符>/` 下（UNC 路径下
+  xdevice 枚举不到设备，实测 `[Environment-0101021]`）。
+- `skills/openharmony-ci-orchestrator/profiles/xts-rerun-lts-f.json`：XTS 运行器目录
+  已改名为 `office/acts`，profile 仍指 `acts-LTS-f`；同步修 `runner_dir` / `session_root`
+  并补三条踩坑说明。
+- `packages/gitlab-credentials`：`gitlab_cred_status` 的 output schema 漏声明
+  `apiProtocol` / `apiHost` / `gitProtocol`，任何调用都会被
+  `additionalProperties: false` 拒绝；补齐三个字段。
+
 ## [1.5.1] - 2026-10-27
 
 **MR 记录瘦身：标题与正文改成"一眼读完"的量级，禁止用验证清单/命令堆字数。**

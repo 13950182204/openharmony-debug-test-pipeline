@@ -50,6 +50,10 @@ export interface ModelPaths {
   skillsDir: string
   /** 流水线状态脚本（模型口径） */
   pipelineScript: string
+  /** 演示模式脚本目录（模型口径；`scripts/demo`） */
+  demoScriptDir: string
+  /** 文档目录（模型口径；演示 runbook 在 `docs/演示模式.md`） */
+  docsDir: string
   /** 流水线状态文件——宿主读写用 */
   stateFile: string
   /** 流水线状态文件——模型执行用（Windows 宿主上与 {@link stateFile} 形态不同） */
@@ -89,6 +93,8 @@ export function resolveModelPaths(hostPackageRoot: string, config: ModelPathConf
     packageRoot,
     skillsDir: joinModelPath(packageRoot, 'skills'),
     pipelineScript: joinModelPath(packageRoot, 'scripts', 'pipeline_state.py'),
+    demoScriptDir: joinModelPath(packageRoot, 'scripts', 'demo'),
+    docsDir: joinModelPath(packageRoot, 'docs'),
     stateFile,
     stateFileModel,
   }

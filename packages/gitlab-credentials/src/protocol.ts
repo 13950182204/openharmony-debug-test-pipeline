@@ -86,3 +86,17 @@ export interface HostStatus {
   /** Whether glab reports an authenticated session for this host. */
   glabAuthed: boolean
 }
+
+/**
+ * Health of the glab CLI runner on the host that runs this plugin. DSH Desktop
+ * runs the host half on Windows, where glab is usually reached through WSL —
+ * the description makes that visible in the settings page.
+ */
+export interface GlabProbe {
+  /** true when `glab --version` succeeds here. */
+  available: boolean
+  /** How glab is invoked, e.g. `wsl.exe -e bash -lc glab` ('' when unresolved). */
+  describe: string
+  /** Why glab is unavailable (never contains secrets). */
+  error: string
+}

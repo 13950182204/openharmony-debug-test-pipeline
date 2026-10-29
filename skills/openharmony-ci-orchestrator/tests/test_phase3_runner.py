@@ -877,9 +877,16 @@ class XtsRerunTests(unittest.TestCase):
         self.assertEqual(test_harness.module_name_from_case(""), "")
 
     def test_run_xts_rerun_reports_inconclusive_without_modules(self) -> None:
-        regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
-                      "runner_dir": "/mnt/d/ohos/XTS6.1/office/acts-LTS-f"}
-        result = runner.run_xts_rerun(regression, "serial", {"artifacts": {}})
+        # 用临时目录而不是真实 /mnt 路径：运行器目录改名（acts-LTS-f → acts）后，
+        # 依赖真实路径的写法会先命中「runner_dir does not exist」而 FAIL。
+        with tempfile.TemporaryDirectory() as directory:
+            runner_dir = Path(directory) / "acts"
+            (runner_dir / "config").mkdir(parents=True)
+            (runner_dir / "config" / "user_config.xml").write_text(
+                "<user_config/>", encoding="utf-8")
+            regression = {"id": "xts-rerun-lts-f", "kind": "xts-rerun",
+                          "runner_dir": str(runner_dir)}
+            result = runner.run_xts_rerun(regression, "serial", {"artifacts": {}})
         self.assertEqual(result["status"], "INCONCLUSIVE")
         self.assertIn("no module to rerun", result["evidence"]["error"])
 

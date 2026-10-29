@@ -9,7 +9,7 @@ import type { Config } from './config.ts';
  * 解析），{{PIPELINE_SCRIPT}} 被替换为流水线状态脚本的绝对路径。
  */
 /** 随插件 vendored 的模块 skill 清单（保持与仓库 skills/ 目录一致） */
-export declare const VENDORED_SKILLS: readonly ["glab-mr-submit", "karpathy-guidelines", "openharmony-ci-orchestrator", "openharmony-ota-upgrade", "openharmony-test-report-triage"];
+export declare const VENDORED_SKILLS: readonly ["glab-mr-submit", "karpathy-guidelines", "openharmony-ci-orchestrator", "openharmony-demo-loop", "openharmony-ota-upgrade", "openharmony-test-report-triage"];
 export interface ParsedSkill {
     name: string;
     description: string;
@@ -27,8 +27,12 @@ export declare function parseSkillFrontmatter(raw: string): ParsedSkill | undefi
  * @param skillsDir - 插件包 skills/ 目录绝对路径
  * @param scriptPath - 流水线状态脚本绝对路径
  * @param stateFile - **模型口径**的流水线状态文件路径（Windows 宿主上是 WSL 视角路径）
+ * @param extra - 可选占位符取值（演示模式脚本目录、文档目录）
  */
-export declare function buildSkillContent(raw: string, skillsDir: string, scriptPath: string, stateFile: string): string;
+export declare function buildSkillContent(raw: string, skillsDir: string, scriptPath: string, stateFile: string, extra?: {
+    demoScriptDir?: string;
+    docsDir?: string;
+}): string;
 /** 插件包根目录（lib/vendor.js → 包根） */
 export declare function packageRoot(): string;
 /**

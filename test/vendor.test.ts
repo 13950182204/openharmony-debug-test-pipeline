@@ -90,9 +90,9 @@ describe('registerVendoredSkills', () => {
 
   beforeEach(() => registrations.length = 0)
 
-  it('注册全部五个 vendored skill，正文占位符已解析', () => {
+  it('注册全部 vendored skill（含演示模式 runbook），正文占位符已解析', () => {
     registerVendoredSkills(ctx, { stateFile: '~/.dsh/pipeline-state.json' })
-    expect(registrations).toHaveLength(5)
+    expect(registrations).toHaveLength(VENDORED_SKILLS.length)
     const names = registrations.map((r) => r.name).sort()
     expect(names).toEqual([...VENDORED_SKILLS].sort())
     for (const reg of registrations) {

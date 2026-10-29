@@ -81,13 +81,25 @@ function resolveRuntime() {
   return undefined
 }
 
-/** profile 里出现即判失败的宿主核心包。 */
+/**
+ * 扫 profile 里的宿主核心包，并区分「本插件装的」与「别的插件带入的」。
+ *
+ * 本插件只把 `@deepseek-ai/dsh-tools` 声明为 peer；若它（或其它宿主包）被装在
+ * 本插件的嵌套 node_modules 下，说明是本次安装带进来的，必须失败——那会让宿主
+ * 解析到 profile 副本、服务 Symbol 不一致。反过来，第三方插件（如 dsh-subagent-codex）
+ * 自带 `@deepseek-ai/dsh-llm` 这类 peer 是它们自己的事：提示即可，不阻断，
+ * 否则脚本会在装完之后 exit 1，连后面的 bundles/配置校验都不跑。
+ */
 function auditHostSdk(nodeModules) {
   const scope = join(nodeModules, '@deepseek-ai')
   const found = []
   if (!existsSync(scope)) return found
   for (const name of readdirSync(scope)) {
-    if (FORBIDDEN_IN_PROFILE.includes(`@deepseek-ai/${name}`)) found.push(name)
+    if (!FORBIDDEN_IN_PROFILE.includes(`@deepseek-ai/${name}`)) continue
+    found.push({
+      name,
+      ours: existsSync(join(nodeModules, 'openharmony-debug-test-pipeline', 'node_modules', '@deepseek-ai', name)),
+    })
   }
   return found
 }
@@ -213,10 +225,18 @@ if (result.status !== 0) {
 
 // 3) 自检：宿主核心包不得进入 profile（否则会覆盖 app.asar 里的同名插件）
 const forbidden = auditHostSdk(nodeModules)
-if (forbidden.length > 0) {
-  console.error('✗ profile 里出现了宿主核心包（会覆盖运行时插件、导致 tools 服务起不来）：', forbidden.join(', '))
-  console.error('  删掉它们并重新安装：pnpm remove ' + forbidden.map((name) => `@deepseek-ai/${name}`).join(' '))
+const ours = forbidden.filter((entry) => entry.ours)
+const others = forbidden.filter((entry) => !entry.ours)
+if (ours.length > 0) {
+  console.error('✗ 本插件把宿主核心包装进了 profile（会覆盖运行时插件、导致 tools 服务起不来）：',
+    ours.map((entry) => entry.name).join(', '))
+  console.error('  它们应只作 peerDependency；检查 package.json 的 dependencies 后重装。')
   process.exit(1)
+}
+if (others.length > 0) {
+  console.warn('⚠ profile 里还有别的插件带入的宿主包（非本次安装，不阻断）：',
+    others.map((entry) => `@deepseek-ai/${entry.name}`).join(', '))
+  console.warn('  若启动报 "Missing services"，先在该 profile 里 pnpm remove 它们再重启。')
 }
 
 // 内嵌子组件必须随包落下：宿主半侧 + 本包 client half。

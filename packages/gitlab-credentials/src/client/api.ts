@@ -4,19 +4,27 @@
  * fetch; nothing is cached in the browser beyond the in-memory form state.
  */
 
-import type { HostStatus, MrPreferences } from '../protocol.ts'
+import type { GlabProbe, HostStatus, MrPreferences } from '../protocol.ts'
 
 /** Shape of the status response. */
 export interface StatusResponse {
   hosts: HostStatus[]
   mrPreferences: MrPreferences
+  /** glab runner health on this host (where tokens are synced to). */
+  glab: GlabProbe
 }
 
 export interface SaveResponse {
   host: string
   user: string
+  /** true when `glab auth login` succeeded. */
+  glabSynced: boolean
+  /** true when reading the account back from glab matched the token owner. */
+  glabVerified: boolean
+  /** Account glab reports after the sync ('' when unavailable). */
+  glabUser: string
+  /** Sync/verification error, '' when everything worked. */
   glabError: string
-  glabAuthed: boolean
 }
 
 /** POST JSON helper with error extraction. */

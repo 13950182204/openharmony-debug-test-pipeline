@@ -21,6 +21,15 @@ export interface Config {
    */
   stateFileModel?: string
   /**
+   * **演示模式**状态文件（宿主读）；缺省 `~/.dsh/demo/state.json`。
+   * 与 `stateFile` 完全独立：演示绝不写真实流水线状态。
+   */
+  demoStateFile?: string
+  /**
+   * **演示模式**状态文件（模型口径）；缺省与 `demoStateFile` 相同，理由同 {@link stateFileModel}。
+   */
+  demoStateFileModel?: string
+  /**
    * 内嵌子组件 `@superjunier/dsh-gitlab-credentials` 的配置（1.5.0 起并入本包）。
    * 不填即开箱可用：凭据文件默认 `~/.dsh/gitlab-credentials.json`。
    * DSH Desktop（宿主 Windows、执行 WSL）形态下把 `storeFile` 指到 WSL 那份文件，
@@ -52,6 +61,13 @@ export interface CredentialsComponentConfig {
    * Windows 宿主指向 WSL 那份时必须用 `//wsl.localhost/<发行版>/home/<用户>/.dsh/gitlab-credentials.json`。
    */
   storeFile?: string
+  /**
+   * glab 执行方式覆盖（一般不需要配）。Windows 宿主默认自动探测 WSL 里的 glab；
+   * 装在非常规位置或要指定发行版时可写成：
+   * - 单个词 = glab 可执行文件路径（如 `/snap/bin/glab`）
+   * - 多个词 = 前缀，glab 的参数接在其后（如 `wsl.exe -d Ubuntu-22.04 -e bash -lc`）
+   */
+  glabCommand?: string
 }
 
 const ladderTierSchema = z.object({
@@ -66,10 +82,13 @@ export const Config: z<Config> = z.object({
   wslPackageRoot: z.string(),
   subagentProvider: z.string().default('fork'),
   stateFileModel: z.string(),
+  demoStateFile: z.string().default('~/.dsh/demo/state.json'),
+  demoStateFileModel: z.string(),
   reviewLadder: z.array(ladderTierSchema),
   credentials: z.object({
     enabled: z.boolean().default(true),
     announceToAgent: z.boolean().default(true),
     storeFile: z.string(),
+    glabCommand: z.string(),
   }),
 })

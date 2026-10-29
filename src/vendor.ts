@@ -21,6 +21,7 @@ export const VENDORED_SKILLS = [
   'glab-mr-submit',
   'karpathy-guidelines',
   'openharmony-ci-orchestrator',
+  'openharmony-demo-loop',
   'openharmony-ota-upgrade',
   'openharmony-test-report-triage',
 ] as const
@@ -68,13 +69,21 @@ export function parseSkillFrontmatter(raw: string): ParsedSkill | undefined {
  * @param skillsDir - 插件包 skills/ 目录绝对路径
  * @param scriptPath - 流水线状态脚本绝对路径
  * @param stateFile - **模型口径**的流水线状态文件路径（Windows 宿主上是 WSL 视角路径）
+ * @param extra - 可选占位符取值（演示模式脚本目录、文档目录）
  */
 export function buildSkillContent(raw: string, skillsDir: string, scriptPath: string,
-                                  stateFile: string): string {
-  const content = raw
+                                  stateFile: string,
+                                  extra: { demoScriptDir?: string; docsDir?: string } = {}): string {
+  let content = raw
     .replaceAll('{{SKILLS_DIR}}', skillsDir)
     .replaceAll('{{PIPELINE_SCRIPT}}', scriptPath)
     .replaceAll('{{PIPELINE_STATE_FILE}}', stateFile)
+  if (extra.demoScriptDir !== undefined && extra.demoScriptDir !== '') {
+    content = content.replaceAll('{{DEMO_SCRIPT_DIR}}', extra.demoScriptDir)
+  }
+  if (extra.docsDir !== undefined && extra.docsDir !== '') {
+    content = content.replaceAll('{{DOCS_DIR}}', extra.docsDir)
+  }
   return (
     content +
     `\n\n## 技能资源\n\n` +
@@ -120,7 +129,8 @@ export function registerVendoredSkills(
       description: parsed.description,
       whenToUse: parsed.whenToUse,
       content: buildSkillContent(parsed.content, modelPaths.skillsDir,
-                                 modelPaths.pipelineScript, modelPaths.stateFileModel),
+                                 modelPaths.pipelineScript, modelPaths.stateFileModel,
+                                 { demoScriptDir: modelPaths.demoScriptDir, docsDir: modelPaths.docsDir }),
       path: skillFile,
       source: 'bundled',
       resourceBase: { kind: 'directory', path: skillDir },

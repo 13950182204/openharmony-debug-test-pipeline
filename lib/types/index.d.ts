@@ -6,9 +6,11 @@ import { Config } from './config.ts';
  * 运行时插件（bundle 聚合包形态，无 client 半身）：
  * - 注册五个 vendored 模块 skill（glab-mr-submit / karpathy-guidelines /
  *   openharmony-ci-orchestrator / openharmony-ota-upgrade /
- *   openharmony-test-report-triage），每个均可独立调用；
+ *   openharmony-test-report-triage）与 openharmony-demo-loop（演示模式 runbook），
+ *   每个均可独立调用；
  * - 注册一个闭环编排 skill（openharmony-debug-loop），八阶段状态机串联各模块；
  * - 注册 /pipeline status|reset 命令，跨会话查询/重置流水线状态；
+ * - 注册 /demo status|reset 命令：演示模式状态（独立状态文件，绝不写真实流水线状态）；
  * - 注册 mr_review_six 工具：六维 MR 审查一键执行，子代理模型按类别自动分级
  *   （复杂类不降级、maintainability 降一档、下限为档位表最低档）。
  *

@@ -42,11 +42,38 @@ var GitlabApi = class {
 //#region src/client/panel.tsx
 /**
 * Settings-page section content for dsh-gitlab-credentials: credential
-* management (per-host token save/delete with validation + glab sync status)
-* and MR preferences (assignee / target branch / labels / milestone). Token
-* fields are password inputs; nothing is persisted in the browser.
+* management (per-host token save/validation + glab sync read-back) and MR
+* preferences (assignee / target branch / labels / milestone). Token fields
+* are password inputs; nothing is persisted in the browser.
+*
+* Layout notes: state is rendered as a labelled badge (dot + text), never as
+* colour-only text, and the status table uses fixed column widths with nowrap
+* cells so short Chinese headers ("用户", "令牌") cannot break into one
+* character per line inside a narrow column.
 */
 const api = new GitlabApi();
+const badgeTones = {
+	ok: {
+		fg: "var(--dsw-alias-state-success-primary, #5bc98b)",
+		bg: "rgba(91, 201, 139, 0.14)",
+		border: "rgba(91, 201, 139, 0.32)"
+	},
+	warn: {
+		fg: "var(--dsw-alias-state-warning-primary, #f0b429)",
+		bg: "rgba(240, 180, 41, 0.14)",
+		border: "rgba(240, 180, 41, 0.32)"
+	},
+	bad: {
+		fg: "var(--dsw-alias-state-error-primary, #ff7777)",
+		bg: "rgba(255, 119, 119, 0.14)",
+		border: "rgba(255, 119, 119, 0.32)"
+	},
+	muted: {
+		fg: "var(--dsw-alias-label-secondary, #c2c2c8)",
+		bg: "rgba(255, 255, 255, 0.06)",
+		border: "rgba(255, 255, 255, 0.16)"
+	}
+};
 /** DSH-aligned field styles (inline; no CSS-module build step). */
 const styles = {
 	root: {
@@ -54,7 +81,7 @@ const styles = {
 		flexDirection: "column",
 		gap: "20px",
 		padding: "4px 2px",
-		maxWidth: "880px",
+		maxWidth: "940px",
 		color: "var(--dsw-alias-label-primary, #f5f5f5)"
 	},
 	h2: {
@@ -68,6 +95,25 @@ const styles = {
 		lineHeight: "18px",
 		color: "var(--dsw-alias-label-tertiary, #a6a6ad)",
 		margin: "0 0 12px"
+	},
+	probe: {
+		display: "flex",
+		alignItems: "center",
+		flexWrap: "wrap",
+		gap: "6px",
+		fontSize: "12px",
+		lineHeight: "20px",
+		color: "var(--dsw-alias-label-tertiary, #a6a6ad)",
+		margin: "0 0 12px"
+	},
+	probeCode: {
+		fontFamily: "var(--ds-font-family-code, monospace)",
+		fontSize: "11px",
+		padding: "1px 6px",
+		borderRadius: "6px",
+		whiteSpace: "nowrap",
+		background: "rgba(255, 255, 255, 0.06)",
+		color: "var(--dsw-alias-label-secondary, #c2c2c8)"
 	},
 	formRow: {
 		display: "grid",
@@ -133,56 +179,141 @@ const styles = {
 		background: "var(--dsw-alias-bg-layer-1, rgb(255 255 255 / 4%))",
 		padding: "16px 18px"
 	},
+	tableWrap: {
+		overflowX: "auto",
+		margin: "0 -4px"
+	},
 	table: {
 		borderCollapse: "collapse",
 		width: "100%",
+		minWidth: "760px",
+		tableLayout: "fixed",
 		fontSize: "12px",
 		color: "var(--dsw-alias-label-primary, #f5f5f5)"
 	},
 	th: {
 		textAlign: "left",
 		padding: "7px 8px",
+		whiteSpace: "nowrap",
 		color: "var(--dsw-alias-label-tertiary, #a6a6ad)",
 		fontWeight: 500,
 		borderBottom: "1px solid var(--dsw-alias-border-l2, rgb(255 255 255 / 14%))"
 	},
 	td: {
 		padding: "8px",
+		whiteSpace: "nowrap",
+		overflow: "hidden",
+		textOverflow: "ellipsis",
 		color: "var(--dsw-alias-label-secondary, #c2c2c8)",
 		borderBottom: "1px solid var(--dsw-alias-border-l1, rgb(255 255 255 / 8%))"
 	},
-	ok: { color: "var(--dsw-alias-state-success-primary, #5bc98b)" },
-	bad: { color: "var(--dsw-alias-state-error-primary, #ff7777)" },
-	muted: { color: "var(--dsw-alias-label-tertiary, #a6a6ad)" },
-	mono: {
+	tdMono: {
 		fontFamily: "var(--ds-font-family-code, monospace)",
 		fontSize: "11px",
-		color: "var(--dsw-alias-label-tertiary, #a6a6ad)"
-	}
+		color: "var(--dsw-alias-label-primary, #f5f5f5)"
+	},
+	badge: {
+		display: "inline-flex",
+		alignItems: "center",
+		gap: "5px",
+		whiteSpace: "nowrap",
+		padding: "1px 8px",
+		borderRadius: "999px",
+		border: "1px solid transparent",
+		fontSize: "11px",
+		lineHeight: "18px",
+		fontWeight: 500
+	},
+	dot: {
+		width: "5px",
+		height: "5px",
+		borderRadius: "50%",
+		display: "inline-block",
+		flex: "none"
+	},
+	notice: {
+		margin: "8px 0 0",
+		fontSize: "12px",
+		lineHeight: "18px"
+	},
+	muted: { color: "var(--dsw-alias-label-tertiary, #a6a6ad)" }
 };
-/** Deterministic state tag for one host row. */
-function hostBadge(host, glab) {
+function Badge(props) {
+	const tone = badgeTones[props.tone];
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+		style: {
+			...styles.badge,
+			color: tone.fg,
+			background: tone.bg,
+			borderColor: tone.border
+		},
+		title: props.title,
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+			"aria-hidden": "true",
+			style: {
+				...styles.dot,
+				background: tone.fg
+			}
+		}), props.children]
+	});
+}
+/** `YYYY-MM-DD HH:mm` in local time; toLocaleString wraps inside narrow cells. */
+function formatChecked(iso) {
+	if (iso === "") return "—";
+	const date = new Date(iso);
+	if (Number.isNaN(date.getTime())) return "—";
+	const pad = (value) => String(value).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+/** Token state of one host (validation result only, glab lives in its own cell). */
+function checkBadge(host) {
 	if (!host.hasToken) return {
 		text: "未配置",
-		tone: "bad"
+		tone: "muted",
+		title: "尚未为这台主机保存令牌"
 	};
 	if (host.lastError !== "") return {
 		text: "校验失败",
-		tone: "bad"
+		tone: "bad",
+		title: host.lastError
 	};
 	if (host.lastChecked === "") return {
-		text: "已保存未校验",
-		tone: "muted"
+		text: "待校验",
+		tone: "muted",
+		title: "令牌已保存，但还没有成功校验过"
 	};
 	return {
-		text: glab ? "有效 · glab 已同步" : "有效 · glab 未同步",
-		tone: "ok"
+		text: "有效",
+		tone: "ok",
+		title: `最近校验：${formatChecked(host.lastChecked)}`
+	};
+}
+/** Whether the saved token actually reached the glab CLI. */
+function syncBadge(host, glabAuthed, glabAvailable) {
+	if (!host.hasToken) return {
+		text: "—",
+		tone: "muted",
+		title: "没有令牌可同步"
+	};
+	if (!glabAvailable) return {
+		text: "不可用",
+		tone: "muted",
+		title: "本机找不到 glab，也无法桥接到 WSL；可在插件配置里设置 credentials.glabCommand"
+	};
+	return glabAuthed ? {
+		text: "已同步",
+		tone: "ok",
+		title: "glab CLI 已登录该主机，MR 流程可直接使用"
+	} : {
+		text: "未同步",
+		tone: "warn",
+		title: "保存令牌后会自动同步到 glab；持续失败请查看上方 glab 运行状态"
 	};
 }
 function GitlabSection() {
 	const [status, setStatus] = (0, react.useState)(null);
 	const [error, setError] = (0, react.useState)("");
-	const [notice, setNotice] = (0, react.useState)("");
+	const [notice, setNotice] = (0, react.useState)(null);
 	const [busy, setBusy] = (0, react.useState)(false);
 	const [host, setHost] = (0, react.useState)("192.168.11.238");
 	const [apiHost, setApiHost] = (0, react.useState)("");
@@ -209,14 +340,13 @@ function GitlabSection() {
 	(0, react.useEffect)(() => {
 		refresh();
 	}, []);
-	const glabMap = (0, react.useMemo)(() => {
-		const map = /* @__PURE__ */ new Map();
-		for (const host of status?.hosts ?? []) map.set(host.host, host.glabAuthed);
-		return map;
-	}, [status]);
+	const glabMap = /* @__PURE__ */ new Map();
+	for (const item of status?.hosts ?? []) glabMap.set(item.host, item.glabAuthed);
+	const glabProbe = status?.glab;
+	const glabAvailable = glabProbe !== void 0 && glabProbe.available;
 	const save = async () => {
 		setBusy(true);
-		setNotice("");
+		setNotice(null);
 		setError("");
 		try {
 			const result = await api.save({
@@ -226,7 +356,18 @@ function GitlabSection() {
 				apiHost,
 				gitProtocol
 			});
-			setNotice(`已保存 ${result.user}@${result.host}` + (result.glabError === "" ? "，glab 已同步" : `（glab 同步失败：${result.glabError}）`));
+			if (result.glabSynced && result.glabVerified) setNotice({
+				tone: "ok",
+				text: `已保存 ${result.user}@${result.host} · glab 已同步并验证（当前用户 ${result.glabUser}）`
+			});
+			else if (result.glabSynced) setNotice({
+				tone: "warn",
+				text: `已保存 ${result.user}@${result.host} · glab 已登录，但回读验证失败：${result.glabError}`
+			});
+			else setNotice({
+				tone: "warn",
+				text: `已保存 ${result.user}@${result.host} · glab 未同步：${result.glabError}`
+			});
 			setToken("");
 			await refresh();
 		} catch (cause) {
@@ -237,11 +378,14 @@ function GitlabSection() {
 	};
 	const remove = async (target) => {
 		setBusy(true);
-		setNotice("");
+		setNotice(null);
 		setError("");
 		try {
 			await api.remove(target);
-			setNotice(`已删除 ${target}（glab 已登出）`);
+			setNotice({
+				tone: "ok",
+				text: `已删除 ${target}（glab 已登出）`
+			});
 			await refresh();
 		} catch (cause) {
 			setError(cause.message);
@@ -251,11 +395,14 @@ function GitlabSection() {
 	};
 	const savePrefs = async () => {
 		setBusy(true);
-		setNotice("");
+		setNotice(null);
 		setError("");
 		try {
 			await api.saveMrPreferences(prefs);
-			setNotice("MR 偏好已保存");
+			setNotice({
+				tone: "ok",
+				text: "MR 偏好已保存"
+			});
 			await refresh();
 		} catch (cause) {
 			setError(cause.message);
@@ -273,9 +420,32 @@ function GitlabSection() {
 			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
 				style: styles.hint,
 				children: [
-					"保存时校验令牌（GET /api/v4/user）并同步到 glab CLI。令牌仅存于本机 ",
+					"保存时先校验令牌（GET /api/v4/user），再写入凭据文件并同步到 glab CLI，最后回读 glab 当前登录用户做验证。 Windows 宿主会自动经 WSL 调用 glab。令牌仅存于本机 ",
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: "~/.dsh/gitlab-credentials.json" }),
 					"（0600），不会出现在对话或日志中。"
+				]
+			}),
+			glabProbe !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: styles.probe,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: "glab 同步目标" }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Badge, {
+						tone: glabProbe.available ? "ok" : "warn",
+						title: glabProbe.error,
+						children: glabProbe.available ? "可用" : "不可用"
+					}),
+					glabProbe.describe !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+						style: styles.probeCode,
+						children: glabProbe.describe
+					}),
+					glabProbe.error !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+						style: styles.muted,
+						children: [
+							"（",
+							glabProbe.error,
+							"）"
+						]
+					})
 				]
 			}),
 			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -287,8 +457,10 @@ function GitlabSection() {
 							style: styles.field,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 								style: styles.label,
+								htmlFor: "gitlab-credential-host",
 								children: "Host"
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								id: "gitlab-credential-host",
 								style: {
 									...styles.input,
 									width: "100%"
@@ -301,8 +473,10 @@ function GitlabSection() {
 							style: styles.field,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 								style: styles.label,
+								htmlFor: "gitlab-credential-api-host",
 								children: "API Host"
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								id: "gitlab-credential-api-host",
 								style: {
 									...styles.input,
 									width: "100%"
@@ -322,8 +496,10 @@ function GitlabSection() {
 							style: styles.field,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 								style: styles.label,
+								htmlFor: "gitlab-credential-api-protocol",
 								children: "协议"
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								id: "gitlab-credential-api-protocol",
 								style: {
 									...styles.input,
 									width: "100%"
@@ -342,8 +518,10 @@ function GitlabSection() {
 							style: styles.field,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 								style: styles.label,
+								htmlFor: "gitlab-credential-git-protocol",
 								children: "Git 协议"
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								id: "gitlab-credential-git-protocol",
 								style: {
 									...styles.input,
 									width: "100%"
@@ -369,8 +547,10 @@ function GitlabSection() {
 							style: styles.field,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 								style: styles.label,
+								htmlFor: "gitlab-credential-token",
 								children: "Token"
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								id: "gitlab-credential-token",
 								style: {
 									...styles.input,
 									width: "100%"
@@ -387,23 +567,26 @@ function GitlabSection() {
 								style: styles.button,
 								disabled: busy || token === "",
 								onClick: () => void save(),
-								children: "保存并校验"
+								children: busy ? "保存中…" : "保存并校验"
 							})
 						})]
 					}),
 					error !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 						style: {
-							...styles.bad,
+							...styles.muted,
+							color: badgeTones.bad.fg,
 							fontSize: "12px"
 						},
 						children: error
 					}),
-					notice !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+					notice !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 						style: {
-							...styles.ok,
-							fontSize: "12px"
+							...styles.notice,
+							color: badgeTones[notice.tone].fg
 						},
-						children: notice
+						role: "status",
+						"aria-live": "polite",
+						children: notice.text
 					})
 				]
 			}),
@@ -412,78 +595,119 @@ function GitlabSection() {
 					...styles.card,
 					marginTop: "12px"
 				},
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("table", {
-					style: styles.table,
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("thead", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "Host"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "用户"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "令牌"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "指纹"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "最近校验"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
-							style: styles.th,
-							children: "状态"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { style: styles.th })
-					] }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("tbody", { children: status.hosts.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: styles.td,
-							children: item.host
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: styles.td,
-							children: item.user || "-"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: styles.td,
-							children: item.hasToken ? "已存" : "-"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: {
-								...styles.td,
-								...styles.mono
-							},
-							children: item.fingerprint || "-"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: styles.td,
-							children: item.lastChecked ? new Date(item.lastChecked).toLocaleString() : "-"
-						}),
-						(() => {
-							const badge = hostBadge(item, glabMap.get(item.host) ?? false);
-							return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-								style: {
-									...styles.td,
-									...styles[badge.tone]
-								},
-								children: badge.text
-							});
-						})(),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-							style: styles.td,
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								style: styles.buttonGhost,
-								disabled: busy,
-								onClick: () => void remove(item.host),
-								children: "删除"
-							})
-						})
-					] }, item.host)) })]
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					style: styles.tableWrap,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("table", {
+						style: styles.table,
+						"aria-label": "已保存的 GitLab 凭据",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("colgroup", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "150px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "72px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "64px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "96px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "124px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "82px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "78px" } }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("col", { style: { width: "64px" } })
+							] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("thead", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "Host"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "用户"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "令牌"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "指纹"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "最近校验"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "校验"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "glab"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", {
+									style: styles.th,
+									children: "操作"
+								})
+							] }) }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("tbody", { children: status.hosts.map((item) => {
+								const check = checkBadge(item);
+								const sync = syncBadge(item, glabMap.get(item.host) ?? false, glabAvailable);
+								return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: {
+											...styles.td,
+											...styles.tdMono
+										},
+										title: item.host,
+										children: item.host
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										children: item.user || "—"
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										children: item.hasToken ? "已存" : "—"
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: {
+											...styles.td,
+											...styles.tdMono
+										},
+										title: item.fingerprint || "",
+										children: item.fingerprint || "—"
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										title: item.lastChecked || "",
+										children: formatChecked(item.lastChecked)
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Badge, {
+											tone: check.tone,
+											title: check.title,
+											children: check.text
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Badge, {
+											tone: sync.tone,
+											title: sync.title,
+											children: sync.text
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+										style: styles.td,
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											style: styles.buttonGhost,
+											disabled: busy,
+											"aria-label": `删除 ${item.host} 的凭据`,
+											onClick: () => void remove(item.host),
+											children: "删除"
+										})
+									})
+								] }, item.host);
+							}) })
+						]
+					})
 				})
 			})
 		] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
@@ -498,8 +722,10 @@ function GitlabSection() {
 						style: styles.field,
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 							style: styles.label,
+							htmlFor: "gitlab-mr-assignee",
 							children: "指派人"
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: "gitlab-mr-assignee",
 							style: {
 								...styles.input,
 								width: "100%"
@@ -515,8 +741,10 @@ function GitlabSection() {
 						style: styles.field,
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 							style: styles.label,
+							htmlFor: "gitlab-mr-target",
 							children: "目标分支"
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: "gitlab-mr-target",
 							style: {
 								...styles.input,
 								width: "100%"
@@ -526,7 +754,7 @@ function GitlabSection() {
 								...prefs,
 								targetBranch: e.target.value
 							}),
-							placeholder: "v6.1.0.31_release"
+							placeholder: "v6.1.0.35_lts"
 						})]
 					})]
 				}),
@@ -539,8 +767,10 @@ function GitlabSection() {
 						style: styles.field,
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 							style: styles.label,
+							htmlFor: "gitlab-mr-labels",
 							children: "标签"
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: "gitlab-mr-labels",
 							style: {
 								...styles.input,
 								width: "100%"
@@ -556,8 +786,10 @@ function GitlabSection() {
 						style: styles.field,
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
 							style: styles.label,
+							htmlFor: "gitlab-mr-milestone",
 							children: "里程碑"
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: "gitlab-mr-milestone",
 							style: {
 								...styles.input,
 								width: "100%"
