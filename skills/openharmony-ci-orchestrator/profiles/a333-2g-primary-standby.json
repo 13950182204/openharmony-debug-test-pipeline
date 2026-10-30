@@ -13,6 +13,10 @@
       "TARGET_SHA": [],
       "TARGET_BRANCH": []
     },
+    "devices": [
+      "a333_medical_dsi_800x1280",
+      "a333_dsi_800x1280"
+    ],
     "evidence_parameters": {
       "Openharmony_Devices": [
         "a333_dsi_800x1280",

@@ -10,7 +10,7 @@ description: 观察并认领平台自带的 OpenHarmony MR 门禁 CI（GitLab �
 **本模块不触发 Jenkins 构建。** MR 提交/更新后，GitLab 为该项目自动创建流水线
 （`openharmony-mr-gate`），该流水线通过专用 Runner 触发并等待 Jenkins 门禁构建
 `OpenHarmony-V6.1-MR-Gate`；门禁再按受影响芯片顺序构建 `OpenHarmony-V6.1-MR-<chip>`
-并归档固件与 OTA 包。我们要做的是：**只读观察这条平台流水线**、在成功后**认领**对应的
+并按 MR 改动的设备变体选择 `DEVICE`（A333 默认 `medical_dsi_800x1280`）后归档固件与 OTA 包。我们要做的是：**只读观察这条平台流水线**、在成功后**认领**对应的
 芯片构建、把包交给受信任的 phase-3 profile 做 OTA 与回归。
 
 Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水线 → 成功后按 MR 身份认领芯片构建
@@ -59,6 +59,7 @@ Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水�
 | MR 在门禁运行中被更新 | 认领前复核发现 SHA 变化 → `blocked`（`stale_source`）；必须让平台对新提交重跑流水线 |
 | 门禁构建已按保留策略清理 | `blocked`；只能重跑平台流水线，或人工提供已下载的包 |
 | 未受影响芯片 | 门禁按 diff 路由；`gate-plan.json` 的 `chips` 不含本 profile 芯片时拒绝认领并说明 |
+| 设备变体不符 | 门禁按 MR 改动的设备构建；`plan.devices`、构建 `DEVICE` 与 profile `jenkins.devices` 不一致 → `blocked`，不拿别的变体冒充当次包 |
 | 新主机凭据未配/失效 | 明确提示 `JENKINS_BASE_URL` 与 `JENKINS_USER/JENKINS_API_TOKEN` 需换成门禁主机的那一对 |
 
 **绝不**在这些情形下回退成自己触发 Jenkins 构建——那会绕过平台门禁的授权与产物一致性。
@@ -78,6 +79,8 @@ Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水�
 
 - profile 是 `profiles/` 下的受信任 JSON；分支名、门禁参数与 MR 文本永远不会提供可执行的设备命令。
 - 已安装的 `a333-2g-primary-standby` profile 只接受门禁作业 `OpenHarmony-V6.1-MR-a333`，
+  只认领 `jenkins.devices` 白名单内的 `DEVICE`（`a333_medical_dsi_800x1280` /
+  `a333_dsi_800x1280`，plan 与构建参数必须一致），
   且只下载门禁归档的 `openharmony_V6.1/out/ota/*.zip`（要求恰好一个命中）。
 - 其主设备 serial 是 `ea010e325333324247102b4ed1988ce7`；备机 serial 是
   `ea010e325333324247102b4ed1a48c99`。仅当主设备升级失败或未能恢复正常 HDC 启动后，才动备机。

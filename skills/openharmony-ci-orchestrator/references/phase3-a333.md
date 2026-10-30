@@ -5,9 +5,12 @@
 - 作业：`OpenHarmony-V6.1-MR-a333`（平台门禁按受影响芯片生成；A333 与 A537 共用 AllWinner 配方）。
 - 必需门禁参数：`MR_IID`、`SOURCE_SHA`（还必须与注册值一致）；目标分支由门禁服务端固定为
   `v6.1.0.31_release` / `v6.1.0.35_lts` 之一，并由 `TARGET_BRANCH` 复核。
-- 产品参数（`Openharmony_Devices=a333_dsi_800x1280`、`XTS_PRODUCT_*`）由门禁服务端固定、
-  不再作为构建参数下发；profile 把它们放在 `evidence_parameters`：**出现即核对，缺失则由设备身份
-  校验兜底**。
+- 构建设备：门禁按 MR 实际改动的 `device/board/seed/a333_newpines/bootloader/a333/configs/<变体>/`
+  选择 `DEVICE`（默认 `medical_dsi_800x1280`）；芯片作业把完整 `<chip>_<变体>` 作为 `DEVICE`
+  构建参数上报。profile 的 `jenkins.devices` 是白名单（`a333_medical_dsi_800x1280`、
+  `a333_dsi_800x1280`）：plan 选择、构建 `DEVICE` 与白名单三者不一致即拒绝认领。
+- 产品证据（`XTS_PRODUCT_*`）由门禁服务端固定、不随调用方传入；profile 把它们放在
+  `evidence_parameters`：**出现即核对，缺失则由设备身份校验兜底**。
 - OTA 产物：该次门禁构建归档的 `openharmony_V6.1/out/ota/*.zip`，要求**恰好一个命中**
   （`update.zip` 或 `updater_full.zip` 由板级打包流程决定）；runner 拒绝命中多个、缺失产物
   与非 OTA 目录下的包。

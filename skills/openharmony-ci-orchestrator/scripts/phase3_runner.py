@@ -21,8 +21,8 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request
 from xml.etree import ElementTree
 
-from ci_orchestrator import (add_event, load_json, run_path, state_directory,
-                             state_lock, write_json)
+from ci_orchestrator import (OrchestratorError, add_event, load_json, profile_devices,
+                             run_path, state_directory, state_lock, write_json)
 from jenkins_api import (JenkinsError, build_http_opener, credentials, request_json)
 import test_harness
 from orchestrator_config import CONFIG_ENV
@@ -431,6 +431,26 @@ def assert_profile_matches(profile: dict[str, Any], state: dict[str, Any]) -> No
         raise Phase3Error(
             f"Gate build belongs to MR {declared_mr!r}, run registered {trigger.get('mr_iid')!r}"
         )
+    # 门禁现在按 MR 改动的设备选择构建变体；profile 若声明了设备白名单，认领方必须
+    # 同时核对构建参数 DEVICE 与 phase-2 记录的 plan 选择，避免把别的变体当成本 run 的包。
+    try:
+        allowed_devices = profile_devices(profile)
+    except OrchestratorError as error:
+        raise Phase3Error(str(error)) from error
+    if allowed_devices:
+        device = str(parameters.get("DEVICE") or "")
+        if not device:
+            raise Phase3Error("Profile requires Jenkins parameter DEVICE to be present")
+        if device not in allowed_devices:
+            raise Phase3Error(
+                f"Profile rejects Jenkins parameter DEVICE: {device!r} "
+                f"not in {list(allowed_devices)!r}"
+            )
+        planned_device = str(trigger.get("device") or "")
+        if planned_device and planned_device != device:
+            raise Phase3Error(
+                f"Gate plan selected {planned_device!r} but the build reports DEVICE {device!r}"
+            )
     build = state.get("build", {})
     if state.get("status") != "build_succeeded" or build.get("result") != "SUCCESS":
         raise Phase3Error("Phase 3 requires a successful platform gate build")

@@ -15,11 +15,14 @@
 ## 作业参数
 
 汇总门禁：`MR_IID`、`SOURCE_SHA`、`TARGET_BRANCH`、`GITLAB_PIPELINE_ID`。
-芯片作业：`MR_IID`、`SOURCE_SHA`、`TARGET_SHA`、`TARGET_BRANCH`。
+芯片作业：`MR_IID`、`SOURCE_SHA`、`TARGET_SHA`、`TARGET_BRANCH`、`DEVICE`。
 
-编译侧参数（`BUILD_MODE=INCREMENTAL`、`FIRMWARE_TYPE=NORMAL`、`FIRMWARE_BRANCH=<目标分支>`、
-`Openharmony_Devices=<chip>_dsi_800x1280`）由门禁任务**服务端固定**，不随调用方传入；
-因此认领时只核对 MR 身份四元组，产品身份由设备侧校验与 `evidence_parameters` 承担。
+`DEVICE=<chip>_<变体>` 由门禁按 MR 的 diff 选择变体目录：RK3568 只有 `dsi_800x1280`；
+A333 默认 `medical_dsi_800x1280`，MR 改动哪个 `bootloader/a333/configs/<变体>/` 就构建哪个，
+一次 MR 改动多个仍存在的变体时回退默认并记 warning。`Openharmony_Devices` 直接取
+`DEVICE`，不再写死 `dsi_800x1280`；编译侧参数（`BUILD_MODE=INCREMENTAL`、
+`FIRMWARE_TYPE=NORMAL`、`FIRMWARE_BRANCH=<目标分支>`）仍由门禁任务固定。认领时核对 MR
+身份四元组 + `DEVICE` 白名单，产品身份由设备侧校验与 `evidence_parameters` 承担。
 
 ## 归档产物
 

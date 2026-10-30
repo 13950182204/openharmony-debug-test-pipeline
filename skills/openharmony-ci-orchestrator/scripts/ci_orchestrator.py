@@ -52,6 +52,8 @@ BUILD_LOOKUP_LIMIT = 40
 GATE_PLAN_MARKERS = ("mr_iid", "source_sha", "chips")
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# 门禁构建设备：`<chip>_<variant>`（variant 自身可含下划线，如 medical_dsi_800x1280）。
+DEVICE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 TERMINAL_RUN_STATUSES = frozenset(
     ("build_failed", "blocked", "gate_failed", "gate_aborted", "gate_not_in_scope")
 )
@@ -260,6 +262,31 @@ def profile_artifact_pattern(profile: dict[str, Any]) -> str:
     return pattern
 
 
+def profile_devices(profile: dict[str, Any]) -> tuple[str, ...]:
+    """Return the gate devices this profile may claim; empty means "not pinned".
+
+    设备是 MR 改动的产物（门禁按 diff 选择 `medical_dsi_600x1024` 等变体），但认领方必须
+    仍受 profile 约束：profile 里列出的设备是**白名单**，不在其中即拒绝认领。
+    """
+    jenkins = profile.get("jenkins") or {}
+    raw = jenkins.get("devices")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw:
+        raise OrchestratorError("Trusted profile jenkins.devices must be a non-empty list")
+    chip = profile_chip(profile)
+    prefix = f"{chip}_"
+    devices: list[str] = []
+    for item in raw:
+        if (not isinstance(item, str) or not DEVICE_PATTERN.fullmatch(item)
+                or not item.startswith(prefix) or len(item) <= len(prefix)):
+            raise OrchestratorError(f"Trusted profile has an invalid device: {item!r}")
+        if item in devices:
+            raise OrchestratorError(f"Trusted profile repeats a device: {item!r}")
+        devices.append(item)
+    return tuple(devices)
+
+
 # --------------------------------------------------------------------------- #
 # 平台观察（GitLab，只读）
 # --------------------------------------------------------------------------- #
@@ -464,6 +491,23 @@ def gate_plan_for(opener: Any, build: dict[str, Any], headers: dict[str, str],
     return parse_gate_plan(console)
 
 
+def plan_devices(plan: dict[str, Any] | None, chip: str) -> list[str]:
+    """Devices the gate recorded for one chip; the gate selects at most one per chip."""
+    if not isinstance(plan, dict):
+        return []
+    raw = plan.get("devices")
+    if not isinstance(raw, list):
+        return []
+    devices: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict) or str(item.get("chip")) != chip:
+            continue
+        device = item.get("device")
+        if isinstance(device, str) and DEVICE_PATTERN.fullmatch(device):
+            devices.append(device)
+    return devices
+
+
 def locate_chip_build(opener: Any, base_url: str, headers: dict[str, str], timeout: int,
                       trigger: dict[str, Any], chip: str) -> dict[str, Any]:
     identity = gate_identity(trigger)
@@ -511,6 +555,35 @@ def collect_build_artifacts(opener: Any, build_url: str, headers: dict[str, str]
     ), None
 
 
+def verify_claimed_device(profile: dict[str, Any], chip: str,
+                          plan: dict[str, Any] | None,
+                          parameters: dict[str, str]) -> str | None:
+    """Cross-check the gate plan, the chip build's DEVICE and the profile whitelist."""
+    allowed = profile_devices(profile) if profile else ()
+    actual = parameters.get("DEVICE")
+    if actual is not None:
+        actual = str(actual)
+        if not DEVICE_PATTERN.fullmatch(actual) or not actual.startswith(f"{chip}_"):
+            raise OrchestratorError(
+                f"Chip build reports an invalid DEVICE for {chip!r}: {actual!r}")
+    planned = plan_devices(plan, chip)
+    if len(planned) > 1:
+        raise OrchestratorError(
+            f"Gate plan recorded multiple devices for {chip!r}: {planned}")
+    planned_device = planned[0] if planned else None
+    if allowed:
+        if actual is None:
+            raise OrchestratorError(
+                f"Profile pins {list(allowed)} but the {chip!r} build reports no DEVICE")
+        if actual not in allowed:
+            raise OrchestratorError(
+                f"Profile does not allow the gate device {actual!r}; allowed: {list(allowed)}")
+    if planned_device is not None and actual is not None and planned_device != actual:
+        raise OrchestratorError(
+            f"Gate plan selected {planned_device!r} but the {chip!r} build reports {actual!r}")
+    return actual or planned_device
+
+
 def adopt_gate_build(root: Path, state: dict[str, Any], opener: Any, headers: dict[str, str],
                      timeout: int) -> str:
     """Claim the platform's own gate build for this run and record it as `build`."""
@@ -518,12 +591,13 @@ def adopt_gate_build(root: Path, state: dict[str, Any], opener: Any, headers: di
     base_url = jenkins_base_url((trigger.get("platform") or {}).get("jenkins_base_url"))
     trigger.setdefault("platform", {})["jenkins_base_url"] = base_url
     gate_job = (trigger.get("platform") or {}).get("gate_job") or DEFAULT_GATE_JOB
-    chip = trigger.get("chip") or profile_chip(profile_record(
-        (state.get("phase3") or {}).get("profile")))
+    profile = profile_record((state.get("phase3") or {}).get("profile"))
+    chip = trigger.get("chip") or profile_chip(profile)
     if not chip:
         raise OrchestratorError(
             "Run has no chip selected; register with --phase3-profile so the chip is fixed"
         )
+    plan: dict[str, Any] | None = None
     try:
         gate = locate_gate_build(opener, base_url, headers, timeout, trigger, gate_job)
     except (JenkinsError, OrchestratorError) as error:
@@ -562,6 +636,7 @@ def adopt_gate_build(root: Path, state: dict[str, Any], opener: Any, headers: di
         chip_build = locate_chip_build(opener, base_url, headers, timeout, trigger, chip)
     except JenkinsError as error:
         raise OrchestratorError(read_error_hint(error)) from error
+    device = verify_claimed_device(profile, chip, plan, chip_build["parameters"])
     artifacts, artifact_error = collect_build_artifacts(
         opener, chip_build["url"], headers, timeout
     )
@@ -572,6 +647,7 @@ def adopt_gate_build(root: Path, state: dict[str, Any], opener: Any, headers: di
         "build_url": chip_build["url"],
         "parameters": chip_build["parameters"],
         "chip": chip,
+        "device": device,
     })
     state["build"] = {
         "url": chip_build["url"],
@@ -579,13 +655,15 @@ def adopt_gate_build(root: Path, state: dict[str, Any], opener: Any, headers: di
         "result": "SUCCESS",
         "verified_parameters": True,
         "chip": chip,
+        "device": device,
         "gate_build_url": gate["url"] if gate else None,
         "artifacts": artifacts,
         "artifact_error": artifact_error,
     }
     state["status"] = "build_succeeded"
     add_event(state, "adopted",
-              f"Adopted platform build {chip_build['job']} #{chip_build['number']}")
+              f"Adopted platform build {chip_build['job']} #{chip_build['number']}"
+              + (f" for device {device}" if device else ""))
     return state["status"]
 
 

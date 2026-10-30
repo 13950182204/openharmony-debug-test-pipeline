@@ -47,6 +47,8 @@ def gate_parameters(**overrides: str) -> dict[str, str]:
         "SOURCE_SHA": GATE_SHA,
         "TARGET_SHA": TARGET_SHA,
         "TARGET_BRANCH": TARGET_BRANCH,
+        # 芯片作业按 MR 改动的设备选择构建变体；门禁本体不声明该参数（stub 复用同一组默认值）。
+        "DEVICE": "a333_medical_dsi_800x1280",
     }
     parameters.update(overrides)
     return parameters
@@ -89,6 +91,10 @@ class JenkinsStub:
         self.artifacts = list(artifacts if artifacts is not None
                               else ["openharmony_V6.1/out/ota/update.zip"])
         self.plan_chips = list(plan_chips if plan_chips is not None else ["rk3568", "a333"])
+        self.plan_devices = [
+            {"chip": "rk3568", "device": "rk3568_dsi_800x1280"},
+            {"chip": "a333", "device": "a333_medical_dsi_800x1280"},
+        ]
         self.gate_number = gate_number
         self.chip_number = chip_number
         self.console = console
@@ -147,7 +153,7 @@ class JenkinsStub:
             if job == GATE_JOB:
                 plan = {"mr_iid": MR_IID, "source_sha": GATE_SHA, "target_sha": TARGET_SHA,
                         "target_branch": TARGET_BRANCH, "merge_base": TARGET_SHA,
-                        "chips": self.plan_chips}
+                        "chips": self.plan_chips, "devices": self.plan_devices}
                 output = "Jenkins gate plan\n" + json.dumps(plan, ensure_ascii=True) + "\n"
             else:
                 output = self.console
@@ -308,6 +314,53 @@ class Phase3RunnerTests(unittest.TestCase):
                       "url": "http://jenkins/build/1"},
         }
         with self.assertRaisesRegex(runner.Phase3Error, "was made from"):
+            runner.assert_profile_matches(self.profile, state)
+
+    def test_profile_device_whitelist_is_pinned_to_the_chip(self) -> None:
+        self.assertEqual(orchestrator.profile_devices(self.profile),
+                         ("a333_medical_dsi_800x1280", "a333_dsi_800x1280"))
+        wrong_chip = {"jenkins": {"job": CHIP_JOB, "devices": ["rk3568_dsi_800x1280"]}}
+        with self.assertRaisesRegex(orchestrator.OrchestratorError, "invalid device"):
+            orchestrator.profile_devices(wrong_chip)
+
+    def test_profile_rejects_a_device_outside_its_whitelist(self) -> None:
+        state = {
+            "status": "build_succeeded",
+            "trigger": {
+                "job": CHIP_JOB, "mr_iid": MR_IID, "source_sha": GATE_SHA,
+                "parameters": gate_parameters(DEVICE="a333_medical_edp_1920x1080"),
+            },
+            "build": {"result": "SUCCESS", "verified_parameters": True,
+                      "url": "http://jenkins/build/1"},
+        }
+        with self.assertRaisesRegex(runner.Phase3Error, "rejects Jenkins parameter DEVICE"):
+            runner.assert_profile_matches(self.profile, state)
+
+    def test_profile_requires_the_device_parameter(self) -> None:
+        parameters = gate_parameters()
+        parameters.pop("DEVICE")
+        state = {
+            "status": "build_succeeded",
+            "trigger": {"job": CHIP_JOB, "mr_iid": MR_IID, "source_sha": GATE_SHA,
+                        "parameters": parameters},
+            "build": {"result": "SUCCESS", "verified_parameters": True,
+                      "url": "http://jenkins/build/1"},
+        }
+        with self.assertRaisesRegex(runner.Phase3Error, "parameter DEVICE"):
+            runner.assert_profile_matches(self.profile, state)
+
+    def test_profile_rejects_a_plan_build_device_mismatch(self) -> None:
+        state = {
+            "status": "build_succeeded",
+            "trigger": {
+                "job": CHIP_JOB, "mr_iid": MR_IID, "source_sha": GATE_SHA,
+                "device": "a333_dsi_800x1280",
+                "parameters": gate_parameters(DEVICE="a333_medical_dsi_800x1280"),
+            },
+            "build": {"result": "SUCCESS", "verified_parameters": True,
+                      "url": "http://jenkins/build/1"},
+        }
+        with self.assertRaisesRegex(runner.Phase3Error, "Gate plan selected"):
             runner.assert_profile_matches(self.profile, state)
 
     # -- evidence / artifact resolution ------------------------------------ #
@@ -1057,6 +1110,8 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(claimed["status"], "build_succeeded")
         self.assertEqual(claimed["build"]["number"], 51)
         self.assertEqual(claimed["build"]["chip"], "a333")
+        self.assertEqual(claimed["build"]["device"], "a333_medical_dsi_800x1280")
+        self.assertEqual(claimed["trigger"]["device"], "a333_medical_dsi_800x1280")
         self.assertEqual(claimed["build"]["artifacts"],
                          ["openharmony_V6.1/out/ota/update.zip"])
         self.assertEqual(claimed["trigger"]["platform"]["gate_build_number"], 50)
@@ -1098,6 +1153,45 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result["runs"][0]["action"], "gate_adopt_failed")
         claimed = orchestrator.load_json(self.root / "runs" / "ci-observe.json")
         self.assertIn("No successful", claimed["build"]["adopt_error"])
+
+    def test_reconcile_blocks_when_the_gate_built_a_device_the_profile_forbids(self) -> None:
+        self.platform.set_mr(status="success")
+        self.stub.plan_devices = [
+            {"chip": "a333", "device": "a333_medical_edp_1920x1080"},
+        ]
+        self.stub.chip_parameters = gate_parameters(DEVICE="a333_medical_edp_1920x1080")
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            orchestrator.create_run(self.root, self.observe_args())
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            result = orchestrator.reconcile_runs(self.root, 20)
+        self.assertEqual(result["runs"][0]["action"], "gate_adopt_failed")
+        claimed = orchestrator.load_json(self.root / "runs" / "ci-observe.json")
+        self.assertIn("does not allow the gate device",
+                      claimed["build"]["adopt_error"])
+
+    def test_reconcile_blocks_when_the_chip_build_device_disagrees_with_the_plan(self) -> None:
+        self.platform.set_mr(status="success")
+        self.stub.chip_parameters = gate_parameters(DEVICE="a333_dsi_800x1280")
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            orchestrator.create_run(self.root, self.observe_args())
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            result = orchestrator.reconcile_runs(self.root, 20)
+        self.assertEqual(result["runs"][0]["action"], "gate_adopt_failed")
+        claimed = orchestrator.load_json(self.root / "runs" / "ci-observe.json")
+        self.assertIn("Gate plan selected", claimed["build"]["adopt_error"])
+
+    def test_reconcile_blocks_when_the_profile_pins_a_device_but_the_build_reports_none(self) -> None:
+        self.platform.set_mr(status="success")
+        parameters = gate_parameters()
+        parameters.pop("DEVICE")
+        self.stub.chip_parameters = parameters
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            orchestrator.create_run(self.root, self.observe_args())
+        with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
+            result = orchestrator.reconcile_runs(self.root, 20)
+        self.assertEqual(result["runs"][0]["action"], "gate_adopt_failed")
+        claimed = orchestrator.load_json(self.root / "runs" / "ci-observe.json")
+        self.assertIn("reports no DEVICE", claimed["build"]["adopt_error"])
 
     def test_reconcile_skips_terminal_runs_and_prunes_old_ones(self) -> None:
         with mock.patch.dict(os.environ, self.platform.environ(), clear=False):
