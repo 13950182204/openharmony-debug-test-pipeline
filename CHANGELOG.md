@@ -2,6 +2,62 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.7.0] - 2026-11-04
+
+**兼容 DSH `0.2.1-rc.5`：基线升到 rc.5（无代码改动）；同批发布门禁认领的设备变体校验。**
+
+### DSH 0.2.1-rc.5 兼容
+
+- **结论：rc.4 / rc.5 没有破坏性变更，插件无需改代码。** 从 npm 取 `0.2.1-rc.3` /
+  `rc.4` / `rc.5` 三份宿主包逐树比对：`dsh`、`dsh-tools`、`dsh-agent`、`dsh-agent-loop`、
+  `dsh-subagent`、`dsh-llm`、`dsh-skill`、`dsh-commands`、`dsh-settings`、
+  `dsh-system-prompt`、`dsh-host-webserver`、`dsh-client-ui-settings`、
+  `dsh-client-connection` **逐字节一致**（仅 `package.json` 版本字段不同）；
+  `dsh-app-boot`、`dsh-web-app`、`dsh-base`、`dsh-hmr`、`dsh-client-ui-primitives`、
+  `dsh-client-ui-tool`、`dsh-client-ui-cordis`、`dsh-client-store`、
+  `dsh-api-session-controller`、`dsh-plugin-manager` 也只有 `package.json` 变化。
+- 唯一代码变化在 `@deepseek-ai/dsh-cordis-client-runner` 的 `lib/client.js`：全部是 slot
+  契约注释/元数据（`conversation.chat.reasoning.body` 的 owner props 增加 `rawText`），
+  与本插件的设置页 slot 注册无关。官方 release notes 印证：rc.4 只修「ACP 模式诊断输出
+  混入 stdout」，rc.5 只有「优化对话中思考内容的展示效果」。
+- 兼容门禁口径未变（rc.5 `dsh-app-boot`）：manifest 有 `engines.dsh` 时**只按它判定**，
+  peer 不参与；`semver.satisfies(..., {includePrerelease: true})` 下 `0.2.1-rc.5` 满足
+  本包的 `>=0.2.1-rc.1 <0.3.0`，不会被 `skippedBundles` 跳过。`compatibility.dshReleases`
+  仍只是展示/市场元数据。
+- 变更：`devDependencies` 六个 `@deepseek-ai/dsh-*` 由 `0.2.1-rc.3` 升到 `0.2.1-rc.5`
+  （根包与内嵌子包同步）；`dsh.compatibility.dshReleases` 补 `0.2.1-rc.4` / `0.2.1-rc.5`；
+  `engines.dsh` 维持原范围（未收窄，rc.1–rc.5 都在内）。
+- 内嵌子包 `@superjunier/dsh-gitlab-credentials` 随之升到 `0.1.7`（同基线、同兼容矩阵）。
+- README「DSH 版本兼容」与子包 README 同步写入上述证据。
+
+### 门禁认领按 MR 设备变体校验 DEVICE 白名单
+
+门禁现在按 MR 实际改动的设备变体选择 `DEVICE` 构建：A333 默认 `medical_dsi_800x1280`，
+MR 改了哪个 `device/board/seed/a333_newpines/bootloader/a333/configs/<变体>/` 就构建哪个。
+此前的认领只核对 MR 身份四元组，存在「把别的设备变体的包当成这次要验证的包」的风险。
+
+- `skills/openharmony-ci-orchestrator/profiles/a333-2g-primary-standby.json`：新增
+  `jenkins.devices` 白名单（`a333_medical_dsi_800x1280` / `a333_dsi_800x1280`）。
+- `skills/openharmony-ci-orchestrator/scripts/ci_orchestrator.py`：新增 `DEVICE_PATTERN`、
+  `profile_devices()`、`plan_devices()`、`verify_claimed_device()`；`adopt_gate_build()`
+  认领时交叉核对 **gate plan 选择的设备 / 芯片构建参数 `DEVICE` / profile 白名单**，
+  任一不一致即 `blocked` 并给出可读原因；认领成功把实际设备写入 `build.device`。
+- `skills/openharmony-ci-orchestrator/scripts/phase3_runner.py`：`assert_profile_matches()`
+  同步校验——profile 声明白名单时，`DEVICE` 必须存在、在白名单内、且与 phase-2 记录的
+  `trigger.device` 一致。
+- 文档：`SKILL.md` 补「设备变体不符」处置行与 profile 约束；`references/phase3-a333.md`、
+  `references/rk3568-job.md` 更新门禁 `DEVICE` 选择规则；`docs/操作手册.md` 补
+  `build.device` 字段与该 blocked 的速查处置。
+- `skills/openharmony-ci-orchestrator/tests/test_phase3_runner.py`：新增设备白名单与
+  plan 一致性用例（96 行）。
+
+### 验证（0.2.1-rc.5）
+
+- `tsc --noEmit` 0 错误（rc.5 类型基线）；`vitest` 46 通过；Python 三套 40 + 84 + 15 通过。
+- `pnpm build` 重建 `lib/` 后工作区无产物差异（产物仍入库，GitHub URL 安装直接可用）。
+- `pnpm pack` 产出的 1.7.0 tarball 装进 desktop profile，
+  `dsh plugin --profile desktop list` 显示 `openharmony-debug-test-pipeline@1.7.0`。
+
 ## [1.6.2] - 2026-10-29
 
 **GitLab 凭据：真正把令牌同步进 glab 并回读验证；设置页状态不漏字、不只靠颜色。**

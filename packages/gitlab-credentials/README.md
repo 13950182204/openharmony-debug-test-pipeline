@@ -73,7 +73,7 @@ DSH 0.2.1 起在 profile 上装了模块解析拦截层：profile 内的插件�
 路由到宿主副本。因此本包：
 
 - `@deepseek-ai/dsh-tools` 只声明为 **`peerDependencies`**（`^0.2.1-rc.1`）；
-- 精确的 `0.2.1-rc.3` 放在 `devDependencies`，只用于 `tsc` / `tsdown`；
+- 精确的 `0.2.1-rc.5` 放在 `devDependencies`，只用于 `tsc` / `tsdown`；
 - 不再有 `postinstall`，不再往插件或 profile 里链接/安装宿主 SDK。
 
 **为什么不能装进 profile**：profile 里一旦出现 `node_modules/@deepseek-ai/dsh-tools`，
@@ -95,7 +95,7 @@ DSH 0.2.1 起在 profile 上装了模块解析拦截层：profile 内的插件�
 
 ```bash
 pnpm add -D typescript tsdown @types/node @types/react @types/react-dom
-npx tsc --noEmit           # 类型检查（SDK 类型来自 devDependencies 的 rc.3）
+npx tsc --noEmit           # 类型检查（SDK 类型来自 devDependencies 的 rc.5）
 npx tsdown                 # 双半构建：lib/index.js（host）+ lib/client.js（browser）
 npx tsx test/store.smoke.ts  # store 冒烟测试（0600/原子写/脱敏/偏好）
 ```

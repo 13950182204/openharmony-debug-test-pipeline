@@ -120,11 +120,23 @@ Windows 路径、模型在 WSL 里跑不动**；`credentials.storeFile` 让桌�
 
 ### DSH 版本兼容
 
-- **构建与类型检查基线：`0.2.1-rc.3`**（`devDependencies` 的 `@deepseek-ai/dsh-*`）。
+- **构建与类型检查基线：`0.2.1-rc.5`**（`devDependencies` 的 `@deepseek-ai/dsh-*`）。
   `package.json` 同时声明：
   - `engines.dsh`：`>=0.2.1-rc.1 <0.3.0`（DSH 安装/启动时的兼容判定）；
   - `dsh.engines.dsh`：同一范围（插件市场展示用）；
-  - `dsh.compatibility.dshReleases`：登记 `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3`。
+  - `dsh.compatibility.dshReleases`：登记 `0.2.1-rc.1` 至 `0.2.1-rc.5` 全部 compatible。
+- **rc.3 → rc.5 无破坏性变更**（1.7.0 已实测）。依据：从 npm 取 `0.2.1-rc.3` /
+  `rc.4` / `rc.5` 三份宿主包逐树比对，`dsh`、`dsh-tools`、`dsh-agent`、`dsh-subagent`、
+  `dsh-skill`、`dsh-commands`、`dsh-llm`、`dsh-settings`、`dsh-system-prompt`、
+  `dsh-host-webserver`、`dsh-client-ui-settings`、`dsh-client-connection` **逐字节一致**
+  （仅 `package.json` 版本字段不同）；其余包（`dsh-app-boot`、`dsh-web-app`、`dsh-base`、
+  `dsh-hmr`、`dsh-plugin-manager` 等）也只有 `package.json` 变化。唯一代码变化在
+  `dsh-cordis-client-runner/lib/client.js`，内容全是 slot 契约注释/元数据
+  （`conversation.chat.reasoning.body` 的 owner props 增加 `rawText`），与本插件无关。
+  官方 release notes 印证：rc.4 只修「ACP 模式诊断输出混入 stdout」，rc.5 只有「优化
+  对话中思考内容的展示效果」。兼容门禁逻辑也没变——有 `engines.dsh` 时**只按它判定**，
+  本插件范围对 rc.5 满足，故插件在 rc.5 上正常加载（1.6.2 在 rc.5 桌面端实测可用，
+  基线升到 rc.5 后 `typecheck` / `build` / 测试同样全绿）。
 - **0.2.1-rc.1 的破坏性变更（已适配）**：子代理 API 由 `ctx.subagents.start(name, request)`
   改为 **`ctx.subagents.startActivation(spec)`**（`provider` / `label` / `request` / `signal` /
   `delivery` 五个顶层字段，`request` 内不再携带 `label` 与 `signal`）。
@@ -146,7 +158,7 @@ DSH 0.2.1 起在 profile 上装了**模块解析拦截层**：profile 内插件�
 路由到宿主副本。因此本插件：
 
 - 把 `@deepseek-ai/dsh-tools` 声明为 **`peerDependencies`**（`^0.2.1-rc.1`），运行时由宿主提供；
-- 只在 `devDependencies` 保留精确的 `0.2.1-rc.3` 供类型检查与构建；
+- 只在 `devDependencies` 保留精确的 `0.2.1-rc.5` 供类型检查与构建；
 - **没有** `postinstall` / `link-runtime-deps`，也**不往 profile 里装任何宿主 SDK**。
 
 为什么不能把 `dsh-tools` 装进 profile（1.3.0 的旧做法）：profile 里一旦出现
@@ -158,7 +170,7 @@ DSH 0.2.1 起在 profile 上装了**模块解析拦截层**：profile 内插件�
 安装/升级 DSH 后的推荐顺序：
 
 ```bash
-pnpm install          # 只装 devDependencies 的 rc.3，用于构建
+pnpm install          # 只装 devDependencies 的 rc.5，用于构建
 pnpm build            # 产出 lib/（安装 tarball 时用的就是它）
 dsh --profile desktop --dump-config   # 确认 bundles/patch 组合无误
 ```
