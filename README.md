@@ -2,7 +2,7 @@
 
 OpenHarmony「修改-调试-测试」闭环 DSH 插件（运行时插件，bundle 聚合包形态）。
 
-> 📖 **流程与操作手册见 [docs/操作手册.md](docs/操作手册.md)**（八阶段流程、CI 契约、状态字段、日常操作、异常速查、双宿主环境规则、能力边界）。
+> 📖 **流程与操作手册见 [docs/操作手册.md](docs/操作手册.md)**（八阶段流程、CI 契约、状态字段、日常操作、豁免资料规范、异常速查、双宿主环境规则、能力边界）。
 
 把五个 OpenHarmony 调测 skill 打包进一个 DSH 插件，串成一条八阶段闭环流水线，
 每个 skill 同时保持独立可调用（模块化）。skill 已从 `~/.codex/skills` **拷贝进插件**
@@ -216,6 +216,29 @@ Settings → 插件配置 中调整。
   `docs/演示模式.md`，脚本说明见 `scripts/demo/README.md`，配套 skill
   `openharmony-demo-loop`。
 
+### 豁免资料规范与校验（3b waiver）
+
+测试侧问题的豁免材料有固定模型（完整规则见手册第六节）：**一个模块的一个 Testsuite = 一个
+`<套件>.txt` + 一个 `<套件>-豁免材料.zip` + 一条平台申请**，同模块多套件必须分文件、分申请、分单号，
+禁止合并成模块级一条。txt 必须是三节式（1. 失败用例 / 2. 失败原因 / 3. 申请豁免理由），佐证放同模块
+`evidence/` 且文件名带 `<套件>-` 前缀，zip 内只装本套件 txt 与佐证；平台「豁免原因」取第 3 节全文，
+「豁免附件」只能传单个 zip。只保存草稿，绝不提交。
+
+提交前用只读校验器自检（支持 Windows / WSL 路径）：
+
+```bash
+python3 scripts/verify_waiver_layout.py \
+  --exemption-dir '/mnt/d/ohos/XTS6.1/DHong/DH-76AM-HS26A/exemption/Acts' \
+  --records '/mnt/d/ohos/XTS6.1/DHong/DH-76AM-HS26A/exemption/Acts/waiver-records-20261105.json'
+```
+
+它逐项检查 txt 命名、三节非空、`模块#套件#用例` 是否与目录/文件名一致、evidence 引用是否存在、
+每个套件是否有成对 zip 且 zip 内容完整、records 与套件是否一一对应且用例数一致；输出
+`汇总：X 模块 / Y 套件 / Z 用例 / N 问题`，退出码 `0` 无问题 / `1` 有问题 / `2` 参数错误。
+历史目录可加 `--allow-legacy`（非规范命名只警告）。
+
+DH-76AM-HS26A 真实验收基线（2026-11-06）：**14 模块 / 34 套件 / 44 用例 / 0 问题**。
+
 模型在每个阶段结束时通过 `scripts/pipeline_state.py` 把产物（`set`）、事件（`note`）与
 **token 用量快照**（`tokens <stage>`，读取 `~/.dsh/storages/session_projcache.json` 中当前
 会话的 uncachedInput/output/cacheRead 累计）写入状态文件；状态文件是闭环的唯一事实来源，
@@ -228,7 +251,7 @@ Settings → 插件配置 中调整。
 pnpm install
 pnpm build          # tsc 产出 lib/（TypeScript 5.9，rewriteRelativeImportExtensions）
 pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件 / provider 接线
-pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestrator / glab
+pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestrator / glab / verify_waiver_layout
 ```
 
 ### Windows 侧重装（DSH Desktop）

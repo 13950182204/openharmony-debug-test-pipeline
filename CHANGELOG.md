@@ -2,6 +2,29 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [Unreleased]
+
+**新增「豁免资料目录与提交模型」规范（R1–R8）与只读校验器。**
+
+### 新增
+
+- `docs/操作手册.md` 新增第六节「豁免资料规范（waiver）」：目录 `exemption/<测试大项>/<模块>/`、
+  一 Testsuite 一份 txt + 一份 zip + 一条申请（禁止模块级合并）、txt 三节式、evidence 命名与
+  相对引用、zip 内容、平台字段、查重键与"只保存草稿"、report.zip 口径、解析器强制拆分；
+  原六～十节顺延为七～十一节。
+- `scripts/verify_waiver_layout.py`：Python 3.10 标准库实现的只读校验器，`--exemption-dir`（必填，
+  Windows 盘符 / `/mnt/<盘符>` / 普通路径互转）、`--records`（可选，校验套件一一对应、用例数与
+  附件路径）、`--allow-legacy`（历史命名只警告）；输出模块数/套件数/用例数/问题数，退出码 0/1/2。
+  真实验收基线（DH-76AM-HS26A，2026-11-06）：**34 套件 / 44 用例 / 0 问题**；原计划 E 组
+  （searchTest_003）仅重跑不豁免，后因整模块两轮均失败、单套件四轮通过，仍按测试侧
+  （顺序/焦点竞态）并入豁免，故不是最初估算的 33 套件 / 43 用例。
+- `README.md` 增加「豁免资料规范与校验（3b waiver）」小节与校验命令。
+
+### 测试
+
+- `scripts/tests/test_verify_waiver_layout.py`：覆盖合规目录、三节缺失、模块/套件混用（R8）、
+  缺 zip 的严格与 legacy 口径、records 不一致、退出码与 Windows↔`/mnt` 路径等价。
+
 ## [1.7.0] - 2026-11-04
 
 **兼容 DSH `0.2.1-rc.5`：基线升到 rc.5（无代码改动）；同批发布门禁认领的设备变体校验。**
