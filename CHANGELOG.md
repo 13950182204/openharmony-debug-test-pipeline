@@ -2,6 +2,16 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
+## [1.7.1] — 2026-11-07
+
+**设置页「GitLab 凭据」说明改为一句话。**
+
+### 变更
+
+- `packages/gitlab-credentials/src/client/panel.tsx`：原来三句（校验顺序、GET /api/v4/user、WSL 调 glab、
+  路径与权限、不落日志）压成一句「令牌存本机 `~/.dsh/gitlab-credentials.json`（0600）；保存时校验并同步 glab，不落日志。」
+  细节留在 badge 的 title 与文档里，设置页不再出现大段说明。版本 1.7.0 → 1.7.1，子包 0.1.7 → 0.1.8。
+
 ## [Unreleased]
 
 **新增「豁免资料目录与提交模型」规范（R1–R8）与只读校验器。**

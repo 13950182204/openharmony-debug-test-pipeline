@@ -258,8 +258,7 @@ export function GitlabSection(): React.JSX.Element {
       <section>
         <h2 style={styles.h2}>GitLab 凭据</h2>
         <p style={styles.hint}>
-          保存时先校验令牌（GET /api/v4/user），再写入凭据文件并同步到 glab CLI，最后回读 glab 当前登录用户做验证。
-          Windows 宿主会自动经 WSL 调用 glab。令牌仅存于本机 <code>~/.dsh/gitlab-credentials.json</code>（0600），不会出现在对话或日志中。
+          令牌存本机 <code>~/.dsh/gitlab-credentials.json</code>（0600）；保存时校验并同步 glab，不落日志。
         </p>
         {glabProbe !== undefined && (
           <p style={styles.probe}>
