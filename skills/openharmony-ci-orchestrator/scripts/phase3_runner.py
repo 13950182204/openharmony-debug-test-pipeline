@@ -245,6 +245,54 @@ def shell(serial: str, command: str, timeout: int = 60, check: bool = True) -> s
     return hdc(serial, "shell", command, timeout=timeout, check=check)
 
 
+def hardware_candidates(profile: dict[str, Any], state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Match live hardware to a trusted mapping for the gate-selected DEVICE."""
+    device_name = str((state.get("trigger") or {}).get("device") or "")
+    mapping = profile.get("hardware_compatibility") or {}
+    spec = mapping.get(device_name) if isinstance(mapping, dict) else None
+    required = ("soc", "display_connector", "display_mode", "touch_name", "dram_mb", "panel_init_hex")
+    if not isinstance(spec, dict) or any(not isinstance(spec.get(k), str) or not spec[k] for k in required):
+        raise Phase3Error(f"No trusted hardware mapping for gate DEVICE {device_name!r}")
+    connector = spec["display_connector"]
+    if not re.fullmatch(r"card[0-9]+-(?:DSI|eDP|HDMI-A)-[0-9]+", connector):
+        raise Phase3Error("Invalid trusted display connector")
+    matched, rejected = [], []
+    online = listed_targets()
+    for registered in profile.get("devices", []):
+        serial = registered.get("serial")
+        if not serial or serial not in online:
+            continue
+        try:
+            model = shell(serial, "cat /proc/device-tree/model").strip("\x00\r\n ")
+            status = shell(serial, f"cat /sys/class/drm/{connector}/status").strip()
+            modes = shell(serial, f"cat /sys/class/drm/{connector}/modes").splitlines()
+            inputs = shell(serial, "cat /proc/bus/input/devices")
+            cmdline = shell(serial, "cat /proc/cmdline")
+            dram = re.search(r"(?:^|\s)androidboot\.dramsize=(\d+)(?:\s|$)", cmdline)
+            panel = shell(serial, "od -An -tx1 /proc/device-tree/panel_0@0/panel-init-sequence")
+            panel_hex = "".join(panel.split()).lower()
+            evidence = {"soc": model, "display_connector": connector, "display_status": status,
+                        "display_modes": [m.strip() for m in modes], "touch_name": spec["touch_name"],
+                        "dram_mb": dram.group(1) if dram else None, "panel_init_hex": panel_hex}
+            touch_names = re.findall(r'^N: Name="([^"]+)"', inputs, re.MULTILINE)
+            if (model != spec["soc"] or status != "connected" or evidence["display_modes"] != [spec["display_mode"]]
+                    or evidence["dram_mb"] != spec["dram_mb"]
+                    or panel_hex != spec["panel_init_hex"]
+                    or spec["touch_name"] not in touch_names):
+                rejected.append({"serial": serial, "hardware": evidence, "touch_names": touch_names})
+                continue
+            matched.append({**registered, "hardware": evidence})
+        except (Phase3Error, OSError) as error:
+            rejected.append({"serial": serial, "error": str(error)})
+    return matched, rejected
+
+
+def select_device_candidates(profile: dict[str, Any], state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if profile.get("hardware_compatibility"):
+        return hardware_candidates(profile, state)
+    return profile["devices"], []
+
+
 def device_snapshot(device: dict[str, Any]) -> dict[str, str]:
     serial = device["serial"]
     require_target(serial)
@@ -650,7 +698,8 @@ def collect_updater_evidence(serial: str) -> str:
 def perform_ota(device: dict[str, Any], package: Path, metadata: dict[str, Any], profile: dict[str, Any],
                 source_sha: str) -> dict[str, Any]:
     serial = device["serial"]
-    attempt: dict[str, Any] = {"role": device["role"], "serial": serial, "started_at": utc_now()}
+    attempt: dict[str, Any] = {"role": device["role"], "serial": serial, "started_at": utc_now(),
+                               "hardware": device.get("hardware")}
     try:
         before = device_snapshot(device)
         require_device_ready(device, before)
@@ -1257,7 +1306,8 @@ def main() -> int:
         attempts = []
         offline: list[dict[str, Any]] = []
         successful_device = None
-        for device in profile["devices"]:
+        candidates, rejected = select_device_candidates(profile, state)
+        for device in candidates:
             # verify_source_sha() 返回的是证据 dict（requested/verified/package_target_version），
             # 这里必须传真正的 SHA 字符串，否则 commitid 门禁恒不成立（实测会无限循环）。
             attempt = perform_ota(device, package, metadata, profile,
@@ -1272,12 +1322,13 @@ def main() -> int:
                 # already_on_target：设备已在本构建固件上（幂等重跑），同样进入回归与证据链。
                 successful_device = device
                 break
-        if successful_device is None and offline and not attempts:
+        if successful_device is None and not attempts:
             # 设备池里一台都不在线：是"等待设备"，不是失败；不消耗重试预算，等下个 tick 再看。
             result = finish_run(root, args.run_id, {
                 "status": "waiting_for_device", "finished_at": utc_now(),
-                "error": "no pool device is online in hdc list targets",
+                "error": "no online device matches the gate hardware requirements",
                 "offline_devices": [item["serial"] for item in offline],
+                "hardware_rejected": rejected,
                 "source_sha": source_sha, "artifact_resolved": artifact, "package": package_state,
             })
             print(json.dumps({"phase": 3, "run_id": args.run_id,

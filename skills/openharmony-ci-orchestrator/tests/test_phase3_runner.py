@@ -802,6 +802,93 @@ class Phase3RunnerTests(unittest.TestCase):
 class XtsRerunTests(unittest.TestCase):
     """OTA 成功后重跑测试用例：报告解析、模块匹配与判定规则。"""
 
+    def test_hardware_selection_requires_exact_gate_mapping(self) -> None:
+        profile = {"hardware_compatibility": {"a333_medical": {
+            "soc": "sun65iw1", "display_connector": "card0-DSI-1",
+            "display_mode": "800x1280", "touch_name": "gslX680", "dram_mb": "2048",
+            "panel_init_hex": "0520011105100129"}}}
+        profile["devices"] = [{"serial": "good", "role": "primary"}, {"serial": "bad", "role": "standby"}, {"serial": "different-memory", "role": "standby"}]
+        state = {"trigger": {"device": "a333_medical"}}
+        def fake_shell(serial, command):
+            if 'device-tree/model' in command: return 'sun65iw1'
+            if '/status' in command: return 'connected'
+            if '/modes' in command: return '800x1280' if serial == 'good' else '1920x1080'
+            if '/proc/cmdline' in command: return 'androidboot.dramsize=2048'
+            if 'panel-init-sequence' in command: return '05 20 01 11 05 10 01 29'
+            return 'N: Name="gslX680"'
+        with mock.patch.object(runner, 'listed_targets', return_value={'good', 'bad', 'unregistered'}), \
+             mock.patch.object(runner, 'shell', side_effect=fake_shell):
+            matched, rejected = runner.hardware_candidates(profile, state)
+        self.assertEqual([item['serial'] for item in matched], ['good'])
+        self.assertEqual([item['serial'] for item in rejected], ['bad'])
+        def other_hardware(serial, command):
+            if '/proc/cmdline' in command: return 'androidboot.dramsize=4096'
+            return fake_shell('good', command)
+        with mock.patch.object(runner, 'listed_targets', return_value={'different-memory'}), \
+             mock.patch.object(runner, 'shell', side_effect=other_hardware):
+            matched, rejected = runner.hardware_candidates(profile, state)
+        self.assertEqual(matched, [])
+        self.assertEqual(rejected[0]['hardware']['dram_mb'], '4096')
+        with self.assertRaises(runner.Phase3Error):
+            runner.hardware_candidates(profile, {'trigger': {'device': 'unknown'}})
+
+    def test_legacy_profile_keeps_registered_devices(self) -> None:
+        devices = [{"serial": "registered", "role": "primary"}]
+        with mock.patch.object(runner, "hardware_candidates") as matcher:
+            self.assertEqual(runner.select_device_candidates({"devices": devices}, {}), (devices, []))
+            matcher.assert_not_called()
+
+    def test_skipped_cases_prevent_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory)
+            (report / "summary_report.xml").write_text(
+                "<testsuites><testsuite name='Class' modulename='ActsExampleTest'>"
+                "<testcase name='case1' result='true'/><testcase name='case2' status='skipped'/>"
+                "</testsuite></testsuites>")
+            self.assertEqual(test_harness.verdict(report, ["ActsExampleTest"])["status"], "INCONCLUSIVE")
+
+    def test_summary_preserves_same_class_in_different_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory)
+            (report / "summary_report.xml").write_text(
+                "<testsuites><testsuite name='Shared' modulename='ActsFirstTest'>"
+                "<testcase name='case1' result='true'/></testsuite>"
+                "<testsuite name='Shared' modulename='ActsSecondTest'>"
+                "<testcase name='case2' result='false'/></testsuite></testsuites>")
+            self.assertEqual(test_harness.verdict(report, ["ActsFirstTest"])["status"], "PASS")
+            self.assertEqual(test_harness.verdict(report, ["ActsSecondTest"])["status"], "FAIL")
+
+    def test_summary_conflict_blocks_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "result").mkdir()
+            (root / "result" / "ActsExampleTest.xml").write_text(
+                "<testsuites name='ActsExampleTest'><testsuite name='Example'>"
+                "<testcase name='case1' classname='Example' result='true'/></testsuite></testsuites>")
+            (root / "summary_report.xml").write_text(
+                "<testsuites><testsuite name='Example' modulename='ActsExampleTest'>"
+                "<testcase name='case1' classname='Example' result='false'/></testsuite></testsuites>")
+            summary = test_harness.summarize(root)
+            self.assertIn("ActsExampleTest", summary["unavailable"])
+
+    def test_summary_does_not_double_count_module_results(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = root / "result"
+            result.mkdir()
+            (result / "ActsExampleTest.xml").write_text(
+                "<testsuites name='ActsExampleTest'><testsuite name='Example'>"
+                "<testcase name='case1' classname='Example' result='true'/></testsuite></testsuites>")
+            (root / "summary_report.xml").write_text(
+                "<testsuites><testsuite name='Example' modulename='ActsExampleTest'>"
+                "<testcase name='case1' classname='Example' result='true'/></testsuite>"
+                "<testsuite name='ActsMissingTest' unavailable='1' tests='0' message='offline'/>"
+                "</testsuites>")
+            summary = test_harness.summarize(root)
+            self.assertEqual(summary['total'], 1)
+            self.assertEqual(summary['passed'], 1)
+            self.assertIn('ActsMissingTest', summary['unavailable'])
+
     def write_report(self, root: Path, name: str, cases: list[tuple[str, str, bool]]) -> Path:
         suites: dict[str, list[tuple[str, str, bool]]] = {}
         for module, case, ok in cases:

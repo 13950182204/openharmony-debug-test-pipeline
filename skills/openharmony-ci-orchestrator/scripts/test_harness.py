@@ -55,7 +55,7 @@ def parse_summary(summary_path: Path) -> dict[str, Any]:
         root = ElementTree.parse(summary_path).getroot()
     except (OSError, ElementTree.ParseError) as error:
         raise ReportError(f"Unable to read xdevice summary {summary_path}: {error}") from error
-    suites: dict[str, dict[str, Any]] = {}
+    suites: dict[tuple[str, str], dict[str, Any]] = {}
     for suite in root.iter():
         if suite.tag.rsplit("}", 1)[-1] != "testsuite":
             continue
@@ -63,7 +63,7 @@ def parse_summary(summary_path: Path) -> dict[str, Any]:
         if not name:
             continue
         module = str(suite.get("modulename") or "").strip()
-        record = suites.setdefault(name, {"name": name, "module": module, "total": 0, "passed": 0,
+        record = suites.setdefault((module, name), {"name": name, "module": module, "total": 0, "passed": 0,
                                           "failed": 0, "skipped": 0, "failed_cases": [],
                                           "time": suite.get("time"),
                                           "unavailable": False, "message": ""})
@@ -168,6 +168,9 @@ def summarize(report_dir: Path) -> dict[str, Any]:
     """
     merged: dict[str, dict[str, Any]] = {}
     result_files = find_result_files(report_dir)
+    result_modules: set[str] = set()
+    summary_counts: dict[str, dict[str, int]] = {}
+    summary_failures: dict[str, set[tuple[str, str]]] = {}
     files: list[Path]
 
     def merge(record_key: str, record: dict[str, Any]) -> None:
@@ -196,6 +199,7 @@ def summarize(report_dir: Path) -> dict[str, Any]:
             parsed = parse_result_file(path)
             if parsed:
                 merge(parsed["name"], parsed)
+                result_modules.add(parsed["name"])
     else:
         files = find_reports(report_dir)
     for path in files:
@@ -207,7 +211,24 @@ def summarize(report_dir: Path) -> dict[str, Any]:
             for suite in parsed["suites"]:
                 key = suite.get("module") or suite["name"]
                 suite = dict(suite, name=key)
+                if key in result_modules:
+                    counts = summary_counts.setdefault(key, {field: 0 for field in ("total", "passed", "failed", "skipped")})
+                    for field in counts:
+                        counts[field] += suite.get(field, 0)
+                    summary_failures.setdefault(key, set()).update(
+                        (case["class"], case["name"]) for case in suite.get("failed_cases", []))
+                    if suite.get("unavailable"):
+                        merged[key]["unavailable"] = True
+                        if suite.get("message"):
+                            merged[key]["message"] = suite["message"]
+                    continue
                 merge(key, suite)
+    for key, counts in summary_counts.items():
+        result_failures = {(case["class"], case["name"]) for case in merged[key]["failed_cases"]}
+        if (any(merged[key][field] != value for field, value in counts.items())
+                or result_failures != summary_failures[key]):
+            merged[key]["unavailable"] = True
+            merged[key]["message"] = "module result and summary counts disagree"
     suites = sorted(merged.values(), key=lambda item: item["name"])
     return {
         "report_dir": str(report_dir),
@@ -265,8 +286,8 @@ def verdict(report_dir: Path, modules: list[str]) -> dict[str, Any]:
         status = "INCONCLUSIVE"
     elif failed:
         status = "FAIL"
-    elif missing:
-        # 部分请求模块没有任何结果记录：不能算通过（没跑到 ≠ 通过）。
+    elif missing or any(item["skipped"] for item in relevant):
+        # 未执行或跳过的用例不能算通过。
         status = "INCONCLUSIVE"
     else:
         status = "PASS"

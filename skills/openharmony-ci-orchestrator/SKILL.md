@@ -82,15 +82,11 @@ Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水�
   只认领 `jenkins.devices` 白名单内的 `DEVICE`（`a333_medical_dsi_800x1280` /
   `a333_dsi_800x1280`，plan 与构建参数必须一致），
   且只下载门禁归档的 `openharmony_V6.1/out/ota/*.zip`（要求恰好一个命中）。
-- 其主设备 serial 是 `ea010e325333324247102b4ed1988ce7`；备机 serial 是
-  `ea010e325333324247102b4ed1a48c99`。仅当主设备升级失败或未能恢复正常 HDC 启动后，才动备机。
-- **OTA 目标选择（用户规定，2026-09-10 起执行）**：OTA 只需选择**当前在线且可升级的 DUT**，
-  不要因为固定串号缺席而卡住——先 `hdc list targets` 枚举在线设备；优先 profile 池内在线设备
-  （primary 优先，其次 standby）；池内无在线设备时，任选一台在线且通过产品身份校验
-  （`const.product.name/model/brand/manufacturer`）与包预检（源版本兼容、`/data` 容量、
-  `write_updater` 可用）的同型号 DUT；把最终选中的 serial 与理由写入 run 状态
-  （`ci_orchestrator.py note --run-id <id> "<理由>"`）与运行日志；离线设备不等待、不反复探测；
-  OTA 完成后在同一台设备上做回归。
+- OTA 目标从 profile 登记的设备池中选择，按登记顺序检查在线设备；未登记设备不能自动刷写。
+  若 profile 配置 `hardware_compatibility`，必须先用门禁实际 `DEVICE` 找到对应硬件映射，
+  验证芯片、显示接口和模式、触控、内存与面板参数；未知映射或不匹配时阻断。
+  当前映射仅覆盖 `a333_medical_dsi_800x1280`，其他变体需要可信映射；无此字段的旧 profile
+  按原设备池执行。选定 serial 和硬件证据记录在本轮状态；OTA 后在同一设备上回归。
 - 每次 OTA 都需要包 ZIP/版本预检、源版本兼容、`/data` 容量、重连后的设备身份、
   `updater_result=pass` 与 `bootevent.boot.completed=true`。
 - Phase 3 要求已注册的源 SHA，并在下载产物前扫描芯片构建 `consoleText` 中实际的

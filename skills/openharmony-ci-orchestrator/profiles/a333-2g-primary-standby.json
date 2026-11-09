@@ -46,6 +46,16 @@
       "openharmony_V6.1/out/ota/updater_full.zip"
     ]
   },
+  "hardware_compatibility": {
+    "a333_medical_dsi_800x1280": {
+      "soc": "sun65iw1",
+      "display_connector": "card0-DSI-1",
+      "display_mode": "800x1280",
+      "touch_name": "gslX680",
+      "dram_mb": "2048",
+      "panel_init_hex": "0520011105100129"
+    }
+  },
   "devices": [
     {
       "role": "primary",
