@@ -15,12 +15,16 @@ export function registerPipelineCommands(ctx: Context, stateFile: string): void 
     handler: (invocation: CommandInvocation): CommandResult => {
       const args = invocation.rawInput.trim().split(/\s+/).filter(Boolean)
       const sub = args[0] ?? 'status'
+      try {
       if (sub === 'status') {
         return { kind: 'success', text: renderState(loadState(stateFile)) }
       }
       if (sub === 'reset') {
         resetState(stateFile)
         return { kind: 'success', text: '流水线状态已重置。' }
+      }
+      } catch (error) {
+        return { kind: 'error', text: String(error) }
       }
       return { kind: 'error', text: `未知子命令 ${sub}，支持: status | reset` }
     },

@@ -170,16 +170,14 @@ describe('pipeline state', () => {
     expect(loaded.events[0].note).toBe('MR 已创建')
   })
 
-  it('损坏文件备份为 .bak 并返回空状态', () => {
+  it('损坏文件和未知版本原样保留并拒绝重置', () => {
     const file = join(dir, 'state.json')
-    writeFileSync(file, '{ not json', 'utf8')
-    const state = loadState(file)
-    expect(state.stage).toBeNull()
-    // 损坏文件被改名备份，原路径不再存在（下次 save 时重建）
-    expect(existsSync(file)).toBe(false)
-    const bakNames = readdirSync(dir).filter((n) => n.startsWith('state.json.bak-'))
-    expect(bakNames).toHaveLength(1)
-    expect(readFileSync(join(dir, bakNames[0]), 'utf8')).toBe('{ not json')
+    for (const content of ['{ not json', '{"schemaVersion":2}']) {
+      writeFileSync(file, content, 'utf8')
+      expect(() => loadState(file)).toThrow()
+      expect(() => resetState(file)).toThrow()
+      expect(readFileSync(file, 'utf8')).toBe(content)
+    }
   })
 
   it('reset 落盘为空状态', () => {

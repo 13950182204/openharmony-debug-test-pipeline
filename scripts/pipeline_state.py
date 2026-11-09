@@ -112,14 +112,7 @@ def load(path: Path) -> dict:
         value.setdefault("events", [])
         return value
     except (json.JSONDecodeError, ValueError) as error:
-        # 损坏文件备份后重建，保证流水线可继续
-        backup = path.with_name(f"{path.name}.bak-{int(datetime.now().timestamp())}")
-        try:
-            path.rename(backup)
-        except OSError:
-            pass
-        print(f"warning: 状态文件损坏已备份为 {backup} ({error})", file=sys.stderr)
-        return empty()
+        raise ValueError(f"状态文件无法读取，已保留原文件 {path}: {error}") from error
 
 
 def empty() -> dict:
@@ -305,11 +298,20 @@ def main(argv: list[str]) -> int:
     path = state_file(args.file)
 
     if args.command == "reset":
+        try:
+            load(path)
+        except (ValueError, OSError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
         save(path, empty())
         print(f"已重置流水线状态: {path}")
         return 0
 
-    state = load(path)
+    try:
+        state = load(path)
+    except (ValueError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     if args.command == "get":
         return cmd_get(state)
 

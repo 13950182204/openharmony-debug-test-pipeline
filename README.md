@@ -298,5 +298,5 @@ vendored 后，原 codex skill 的后续更新需要手动同步进本仓库：
 
 - 真实动作（MR 创建、OTA 升级）必须用户授权，dry-run 先行；**不触发任何 Jenkins 构建**（门禁由平台 CI 驱动，插件只读观察 + 认领）；
 - 设备操作前必须 `hdc list targets` 确认唯一目标；
-- 状态文件损坏时自动备份为 `.bak-<时间戳>` 并重建；
+- 状态文件损坏或版本不受支持时保留原文件并报错；
 - Jenkins / GitLab 凭据只从 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）或进程环境读取，不写入状态文件或 MR 文本。

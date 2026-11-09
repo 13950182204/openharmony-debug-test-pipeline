@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 /**
  * 流水线状态：跨会话持久化闭环进度（JSON 文件）。
  * - 写入为原子写（临时文件 + rename），避免并发读半截文件；
- * - 文件损坏时备份为 .bak-<时间戳> 后重建空状态，不崩溃。
+ * - 损坏或不支持的版本保留原文件，交由调用方报告错误。
  */
 
 export interface PipelineEvent {
@@ -56,45 +56,34 @@ export function expandStatePath(path: string): string {
   return resolve(path)
 }
 
-/** 读取状态文件；不存在返回空状态，损坏则备份后重建 */
+/** 读取状态文件；不存在返回空状态，损坏或版本不匹配时报错 */
 export function loadState(path: string): PipelineState {
   const file = expandStatePath(path)
   if (!existsSync(file)) return emptyState()
   let raw: string
   try {
     raw = readFileSync(file, 'utf8')
-  } catch {
-    return emptyState()
+  } catch (error) {
+    throw new Error(`无法读取状态文件 ${file}: ${String(error)}`)
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    backupCorrupt(file)
-    return emptyState()
+    throw new Error(`状态文件不是有效 JSON，已保留原文件: ${file}`)
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    backupCorrupt(file)
-    return emptyState()
+    throw new Error(`状态文件格式无效，已保留原文件: ${file}`)
   }
   const value = parsed as Partial<PipelineState>
   if (value.schemaVersion !== SCHEMA_VERSION) {
-    backupCorrupt(file)
-    return emptyState()
+    throw new Error(`不支持的状态文件版本，已保留原文件: ${file}`)
   }
   return {
     ...emptyState(),
     ...value,
     artifacts: value.artifacts && typeof value.artifacts === 'object' ? value.artifacts : {},
     events: Array.isArray(value.events) ? value.events : [],
-  }
-}
-
-function backupCorrupt(file: string): void {
-  try {
-    renameSync(file, `${file}.bak-${Date.now()}`)
-  } catch {
-    // 备份失败不阻断加载
   }
 }
 
@@ -109,6 +98,7 @@ export function saveState(path: string, state: PipelineState): void {
 
 /** 重置状态并落盘 */
 export function resetState(path: string): PipelineState {
+  loadState(path)
   const state = emptyState()
   saveState(path, state)
   return state

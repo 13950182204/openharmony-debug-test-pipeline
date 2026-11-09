@@ -28,6 +28,7 @@ regression → done）压进 10 分钟，并且**不污染真实流水线状态*
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -191,6 +192,14 @@ def _check_report(case: dict, report_override: str | None) -> tuple[str, str, st
 
 
 def _check_fix(case: dict) -> tuple[str, str, str]:
+    if case["fix"].get("kind") == "hap":
+        build = Path(case["fix"]["build"]).expanduser()
+        if not build.is_file():
+            return FAIL, "修复产物", f"缺失: {build}"
+        digest = hashlib.sha256(build.read_bytes()).hexdigest()
+        if digest != case["fix"].get("build_sha256"):
+            return FAIL, "修复产物", "HAP 哈希与案例不一致"
+        return PASS, "修复产物", f"{build.name} · SHA-256 {digest}"
     patch = Path(case["fix"]["patch"]).expanduser()
     build = Path(case["fix"]["build"]).expanduser()
     problems = [str(path) for path in (patch, build) if not path.is_file()]
@@ -200,6 +209,8 @@ def _check_fix(case: dict) -> tuple[str, str, str]:
 
 
 def _check_gate_package(case: dict) -> tuple[str, str, str]:
+    if not case["gate"].get("package"):
+        return WARN, "OTA 包", "待认领本次门禁构建产物"
     package = Path(case["gate"]["package"]).expanduser()
     if not package.is_file():
         return FAIL, "OTA 包", f"不存在: {package}"
@@ -220,7 +231,7 @@ def _check_gate_script(case: dict) -> tuple[str, str, str]:
 def _check_device(case: dict) -> tuple[str, str, str]:
     serial = case["fix"].get("device")
     if not serial:
-        return WARN, "目标设备", "用例未指定设备（lane c 兜底）"
+        return WARN, "目标设备", "运行时根据门禁硬件类型选择，不预设 serial"
     listing = run(["hdc", "list", "targets"], timeout=30)
     if listing.returncode != 0:
         return WARN, "目标设备", "hdc 不可用（lane c 兜底）"
@@ -268,7 +279,7 @@ def _check_gitlab(case: dict) -> tuple[str, str, str]:
 
 
 def _check_disk(case: dict) -> tuple[str, str, str]:
-    target = Path(case["gate"]["package"]).expanduser().parent
+    target = Path(case["gate"].get("package") or str(DEMO_DIR)).expanduser().parent
     try:
         usage = shutil.disk_usage(target)
     except OSError as error:

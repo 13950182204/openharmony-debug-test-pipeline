@@ -153,7 +153,9 @@ class CaseLoadingTests(unittest.TestCase):
         case = democtl.load_case("mr260")
         for key in ("report", "triage", "fix", "mr", "gate", "ota", "regression", "cues"):
             self.assertIn(key, case)
-        self.assertEqual(case["report"]["expect"]["failed"], 4)
+        self.assertEqual(case["report"]["expect"]["failed"], 1)
+        self.assertEqual(case["regression"]["module"], "ActsAceEngineNativeAPI20Test")
+        self.assertNotIn("device", case["fix"])
         self.assertTrue(case["cues"], "cues 是现场口播的唯一来源，不能为空")
         for stage in democtl.STAGES:
             self.assertIn(stage, case["cues"], f"缺少 {stage} 阶段的口播")

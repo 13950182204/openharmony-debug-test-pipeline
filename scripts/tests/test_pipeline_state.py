@@ -26,6 +26,19 @@ _spec.loader.exec_module(pipeline_state)
 
 
 class ValidateTriageArtifactsTests(unittest.TestCase):
+    def test_unknown_or_corrupt_state_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            for content in ('{bad', '{"schemaVersion": 2}'):
+                for command in ("get", "reset", "set"):
+                    path.write_text(content, encoding="utf-8")
+                    args = [sys.executable, str(SCRIPTS / "pipeline_state.py"), command]
+                    if command == "set":
+                        args.extend(["done", "{}"])
+                    result = subprocess.run([*args, "--file", str(path)], capture_output=True)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(path.read_text(encoding="utf-8"), content)
+
     def validate(self, payload: dict) -> tuple[list[str], list[str]]:
         return pipeline_state.validate_stage_artifacts("triage", payload)
 
