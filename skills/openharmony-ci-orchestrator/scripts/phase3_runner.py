@@ -1214,6 +1214,14 @@ def mr_note_body(state: dict[str, Any]) -> str:
         lines.append(f"- Regression: `{regression.get('status')}`")
         for result in regression.get("results", []):
             lines.append(f"  - `{result.get('id')}`: `{result.get('status')}`")
+            if result.get("report_dir"):
+                lines.append(f"    - Report: `{result['report_dir']}`")
+    images = [str(item).strip() for item in phase3.get("evidence_images") or [] if str(item).strip()]
+    if images:
+        # 回归证据截图由 attach_regression_evidence.py 上传后写回同一状态，这里只负责渲染，
+        # 重复回写同一条 note 不会产生重复图片。
+        lines += ["", "### 回归结果截图", ""]
+        lines += images
     return "\n".join(lines)
 
 

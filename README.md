@@ -105,6 +105,10 @@ python3 scripts/pipeline_state.py reset            # 清空重来
    A333 与 A537 同源、共用 `-MR-a333`，不需要为 A537 单独配 profile；新芯片才要加 profile 与设备池。
 4. 有受信任的 phase-3 profile（负责下载/预检/OTA/回归），profile 里的设备序列号要与在线设备一致。
 
+**等构建**：MR 提交后不用守着。建一个 **DSH 定时任务**：首次在 **+2.5 小时**检查一次，
+没好就**每 30 分钟**再查，命令就是 `reconcile`；拿到构建成功后继续 OTA/回归，run 进终态后把该任务删掉。
+插件自己不做定时（**不要写 systemd 定时器**，等待节奏由 agent 侧驱动）。
+
 **跑**：`ci` 阶段认领构建 → `ota` 阶段升级设备 → `regression` 阶段在升级后的设备上重跑
 `failedModules`（或由 profile 驱动 phase-3 回归）→ 与失败表逐条对比后 `set regression`。
 
@@ -120,6 +124,21 @@ python3 scripts/pipeline_state.py reset            # 清空重来
 
 走过 MR 的轮次必须有通过的回归；`INCONCLUSIVE` 不写 `smokeOnly` 视为**没通过**——
 不允许拿一个"没结论"宣布闭环。
+
+**证据回写（有 XTS 用例的回归）**：在设备上用 xdevice 重跑失败的模块，再把报告页截图回写到同一条 MR 评论：
+
+```bash
+# 1) 截图（报告目录里的 summary_report.html；static/detail.html 可再截一张）
+msedge --headless=new --disable-gpu --window-size=1600,2400 \
+  --screenshot="D:\ohos\XTS6.1\<测试套>\summary-report.png" \
+  "file:///D:/ohos/XTS6.1/<测试套>/summary_report.html"
+
+# 2) 上传并更新同一条评论（可重复，同一张图不会重复）
+python3 skills/openharmony-ci-orchestrator/scripts/attach_regression_evidence.py \
+  --run-id <run-id> --image "D:\ohos\XTS6.1\<测试套>\summary-report.png"
+```
+
+截图只是证据，不参与通过判定；判定只认回归报告。
 
 **回归失败之后**：阶段回 `fix`，在原 MR 上追加提交（same-MR 修复），再走一遍 `ci` → `ota` → `regression`；
 不要新开一轮报告来绕过失败记录。

@@ -37,18 +37,44 @@ Phase 2（本模块）：注册 run（`observe`）→ 只读轮询平台流水�
 
    `--phase3-profile` 同时决定**认领哪个芯片的构建**（取 `jenkins.job` 里的 `<chip>`）：
    需要 OTA 验证时必须显式给出。只做观察、不打算 OTA 时可以不传。
-3. 平台流水线跑完（数十分钟到数小时）后推进一次；`reconcile` 也可由 systemd 定时器兜底：
+3. 平台流水线跑完（数十分钟到数小时）后推进一次。**等待节奏交给 DSH 定时任务，不要写 systemd 定时器**
+   （`reconcile` 是一次性推进命令，不自带轮询）：
+
+   - MR 提交后建一个 DSH 定时任务：**首次在 +2.5 小时**执行，之后**每 30 分钟**一次，内容就是下面这条 `reconcile`；
+   - 首次命中 `build_succeeded` 就继续第 4 步；仍是 `gate_pending` 就让它按 30 分钟继续查，不要手搓 `sleep`；
+   - run 进入终态（`passed` / `failed` / `blocked` / `gate_*`）后**立刻删掉这个定时任务**。
 
    ```bash
    python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
    ```
 
    `reconcile` 默认只处理未结束的 run（`--include-terminal` 强制全量），可用
-   `--prune-days N` 把终结 run 归档到 `runs/archive/`。
+   `--prune-days N` 把终结 run 归档到 `runs/archive/`。systemd 只用来跑 phase-3 阶段单元，
+   不负责定时检查；`install_systemd_units.py --reconcile-calendar` 仅作历史兼容，不要再用。
 4. 平台流水线成功 → 认领芯片构建（参数 `MR_IID/SOURCE_SHA/TARGET_BRANCH` 与 run 记录逐项相符，
    且该构建 `result=SUCCESS`）→ 记录 `build.url` 与归档清单 → 启动 phase-3 systemd 单元。
 5. phase-3 单元执行受信任 runner：核对源 SHA 的 console 检出证据 → 下载 OTA 包 → 包预检 →
-   设备身份与源版本预检 → OTA → 同设备回归 → 回写 MR 评论。
+   设备身份与源版本预检 → OTA → 同设备回归 → 回写 MR 评论。回归完成后把报告截图也回写到
+   同一条评论（见下节「回归证据」）。
+
+## 回归证据（截图回写）
+
+回归判定只认报告；截图是证据，不参与通过判定。有 XTS 用例的回归，拿到报告后两步回写：
+
+```bash
+# 1) 截图（Windows 侧 Edge 无头模式；报告目录见 MR 评论里的 Report 行）
+"/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --headless=new --disable-gpu \
+  --window-size=1600,2400 --screenshot="D:\ohos\XTS6.1\<测试套>\summary-report.png" \
+  "file:///D:/ohos/XTS6.1/<测试套>/summary_report.html"
+
+# 2) 上传并更新同一条 MR 评论（可重复，同一张图不会重复）
+python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/attach_regression_evidence.py" \
+  --run-id <run-id> --image "D:\ohos\XTS6.1\<测试套>\summary-report.png"
+```
+
+- xdevice 报告目录里 `summary_report.html` 是汇总页，`static/detail.html` 是明细页；两条都值得各截一张。
+- 链接写进 run 状态的 `phase3.evidence_images`，评论里渲染在「### 回归结果截图」下。
+- 上传走 `glab api ... projects/<project>/uploads`，与 glab-mr-submit 建 MR 时同一条通道。
 
 ## 失败分流（都不触发构建）
 

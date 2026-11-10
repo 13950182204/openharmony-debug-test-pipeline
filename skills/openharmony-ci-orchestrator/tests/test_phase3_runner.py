@@ -31,6 +31,7 @@ import ci_orchestrator as orchestrator  # noqa: E402
 import gitlab_pipeline as platform  # noqa: E402
 import jenkins_api  # noqa: E402
 import test_harness  # noqa: E402
+import attach_regression_evidence as evidence  # noqa: E402
 
 GATE_SHA = "a1b2c3d4e5f61111111111111111111111111111"
 GATE_JOB = "OpenHarmony-V6.1-MR-Gate"
@@ -1564,6 +1565,72 @@ class ContractTests(unittest.TestCase):
     def test_scope_outside_the_release_branches_is_explicit(self) -> None:
         state = platform.run_state_for({"status": "skipped"}, target_branch="master")
         self.assertEqual(state, "gate_not_in_scope")
+
+
+class RegressionEvidenceTests(unittest.TestCase):
+    """回归证据截图：note 渲染、上传、去重。"""
+
+    def state(self, images: list[str] | None = None) -> dict:
+        phase3 = {
+            "status": "passed",
+            "profile": "a333-2g-primary-standby",
+            "regression": {
+                "status": "PASS",
+                "results": [{"id": "acts", "status": "PASS",
+                             "report_dir": "/mnt/d/ohos/XTS6.1/office/acts/reports/ci/20261110"}],
+            },
+        }
+        if images is not None:
+            phase3["evidence_images"] = images
+        return {"run_id": "run-1",
+                "trigger": {"job": CHIP_JOB, "source_branch": "branch", "source_sha": GATE_SHA,
+                            "platform": {"pipeline_id": PIPELINE_ID}},
+                "build": {"number": 51, "url": "http://jenkins/job/chip/51"},
+                "phase3": phase3}
+
+    def test_note_shows_report_dir_and_regression_screenshots(self) -> None:
+        link = "![summary-report.png](/uploads/abc/summary-report.png)"
+        body = runner.mr_note_body(self.state([link]))
+        self.assertIn("- Report: `/mnt/d/ohos/XTS6.1/office/acts/reports/ci/20261110`", body)
+        self.assertIn("### 回归结果截图", body)
+        self.assertIn(link, body)
+
+    def test_note_without_screenshots_has_no_evidence_section(self) -> None:
+        body = runner.mr_note_body(self.state())
+        self.assertNotIn("### 回归结果截图", body)
+
+    def test_merge_evidence_images_keeps_order_and_drops_duplicates(self) -> None:
+        existing = ["![a.png](/uploads/a.png)"]
+        merged = evidence.merge_evidence_images(existing, ["![b.png](/uploads/b.png)",
+                                                           "![a.png](/uploads/a.png)", " "])
+        self.assertEqual(merged, ["![a.png](/uploads/a.png)", "![b.png](/uploads/b.png)"])
+
+    def test_upload_image_posts_to_project_uploads(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            commands.append(list(command))
+            return json.dumps({"markdown": "![shot.png](/uploads/shot.png)"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "shot.png"
+            source.write_bytes(b"png")
+            with mock.patch.object(runner, "run_command", fake_run):
+                link = evidence.upload_image("gitlab.example", "group/project", source)
+        self.assertEqual(link, "![shot.png](/uploads/shot.png)")
+        command = commands[0]
+        self.assertIn("projects/group%2Fproject/uploads", command)
+        self.assertIn("--method", command)
+        self.assertTrue(any(item.startswith("file=@") and item.endswith("shot.png") for item in command),
+                        command)
+
+    def test_upload_image_rejects_payload_without_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "shot.png"
+            source.write_bytes(b"png")
+            with mock.patch.object(runner, "run_command", lambda *a, **k: json.dumps({"url": "/uploads/x"})):
+                with self.assertRaises(runner.Phase3Error):
+                    evidence.upload_image("gitlab.example", "group/project", source)
 
 
 if __name__ == "__main__":

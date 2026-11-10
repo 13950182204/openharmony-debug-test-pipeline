@@ -97,11 +97,12 @@ GITLAB_PROJECT=harmony/system/v9611/openharmony_V6.1
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_units.py" \
-  --reconcile-timer '*:0/5' --prune-days 14 --enable
+  --prune-days 14 --enable
 ```
 
-该命令写入 `openharmony-ci-reconcile.{service,timer}`（含显式 `PATH`，保证 systemd 能找到
-`glab`），并**禁用** legacy 的 `openharmony-ci-webhook.service`（平台信号来自 GitLab；
+该命令写入 `openharmony-ci-reconcile.service` 与 phase-3 单元（含显式 `PATH`，保证 systemd
+能找到 `glab`），**不再安装 reconcile 定时器**——构建等待节奏由 DSH 定时任务驱动（首次 +2.5 小时，
+之后每 30 分钟，终态后删除）。它同时**禁用** legacy 的 `openharmony-ci-webhook.service`（平台信号来自 GitLab；
 单元文件保留便于回滚，需要时用 `--with-webhook` 启用）。用户服务要求机器保持开机；
 `loginctl enable-linger <user>` 让它在登出后存活，用 `loginctl show-user <user> -p Linger` 验证。
 
@@ -109,7 +110,7 @@ python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/install_systemd_unit
 
 ```bash
 python3 "{{SKILLS_DIR}}/openharmony-ci-orchestrator/scripts/ci_orchestrator.py" reconcile
-systemctl --user status openharmony-ci-reconcile.timer
+systemctl --user status 'openharmony-ci-phase3@<run-id>.service' --no-pager
 ls -1 ~/.local/state/openharmony-ci-orchestrator/runs/
 systemctl --user status 'openharmony-ci-phase3@<run-id>.service'
 ```

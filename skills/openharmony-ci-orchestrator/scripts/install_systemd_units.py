@@ -64,8 +64,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=8787)
     parser.add_argument("--enable", action="store_true", help="Reload, enable, and start units after writing them")
-    parser.add_argument("--reconcile-timer", default="hourly",
-        help="systemd OnCalendar/OnUnitActiveSec expression for the reconcile timer (default: hourly)")
+    parser.add_argument("--reconcile-timer", default=None,
+        help="[已废弃] 显式给出时才安装 reconcile 定时器（历史兼容）；默认不装——"
+             "构建等待节奏由 DSH 定时任务驱动（首次 +2.5h，之后每 30 分钟）")
     parser.add_argument("--with-webhook", action="store_true",
         help="Also enable the legacy Jenkins webhook receiver (platform CI signals via GitLab)")
     parser.add_argument("--prune-days", type=int, default=14,
@@ -80,7 +81,7 @@ def main() -> int:
     if args.prune_days < 0:
         raise SystemExit("prune-days must be non-negative")
     import re
-    if not re.fullmatch(r"[A-Za-z0-9:*/-]+", args.reconcile_timer):
+    if args.reconcile_timer is not None and not re.fullmatch(r"[A-Za-z0-9:*/-]+", args.reconcile_timer):
         raise SystemExit("reconcile-timer must be a plain systemd OnCalendar expression (letters/digits/*:/ -)")
     skill_dir = Path(__file__).resolve().parents[1]
     orchestrator = skill_dir / "scripts/ci_orchestrator.py"
@@ -114,11 +115,15 @@ def main() -> int:
         f"ExecStart={command_prefix} reconcile --state-dir {unit_arg(str(state_dir))} "
         f"--prune-days {args.prune_days}\n"
     )
-    timer = (
-        "[Unit]\nDescription=OpenHarmony platform-CI reconciliation\n\n"
-        "[Timer]\nOnCalendar=" + args.reconcile_timer + "\nPersistent=true\nRandomizedDelaySec=1m\n"
-        "Unit=openharmony-ci-reconcile.service\n\n[Install]\nWantedBy=timers.target\n"
-    )
+    # 等待节奏归 DSH 定时任务（agent 侧驱动）：默认不再写 timer，只有显式给
+    # --reconcile-timer 时才装，供历史环境回滚使用。
+    timer = None
+    if args.reconcile_timer is not None:
+        timer = (
+            "[Unit]\nDescription=OpenHarmony platform-CI reconciliation\n\n"
+            "[Timer]\nOnCalendar=" + args.reconcile_timer + "\nPersistent=true\nRandomizedDelaySec=1m\n"
+            "Unit=openharmony-ci-reconcile.service\n\n[Install]\nWantedBy=timers.target\n"
+        )
     phase3_env = (
         "# phase-3 在本机/设备层面的合法重试开关（与 phase3_unit_entry.py 对齐）。\n"
         "# CI_PHASE3_RETRY_PREFLIGHT=1: allow retrying preflight/transfer failures that\n"
@@ -127,14 +132,16 @@ def main() -> int:
     )
     write_if_changed(unit_dir / "openharmony-ci-webhook.service", webhook)
     write_if_changed(unit_dir / "openharmony-ci-reconcile.service", reconcile)
-    write_if_changed(unit_dir / "openharmony-ci-reconcile.timer", timer)
+    if timer is not None:
+        write_if_changed(unit_dir / "openharmony-ci-reconcile.timer", timer)
     # 模板单元的 drop-in：仓库必须能重现手工装过的东西（否则换机重装就丢）。
     phase3_dropin_dir = unit_dir / "openharmony-ci-phase3@.service.d"
     phase3_dropin_dir.mkdir(parents=True, exist_ok=True)
     write_if_changed(phase3_dropin_dir / "retry-preflight.conf", phase3_env)
     if args.enable:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "--user", "enable", "--now", "openharmony-ci-reconcile.timer"], check=True)
+        if timer is not None:
+            subprocess.run(["systemctl", "--user", "enable", "--now", "openharmony-ci-reconcile.timer"], check=True)
         if args.with_webhook:
             subprocess.run(["systemctl", "--user", "enable", "--now", "openharmony-ci-webhook.service"], check=True)
         else:

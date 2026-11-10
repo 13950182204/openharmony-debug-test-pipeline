@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-10
+
+**回归闭环补两块：构建等待节奏交给 DSH 定时任务（不再写 systemd 定时器），回归报告截图可回写 MR 评论。**
+
+### 新增
+
+- `skills/openharmony-ci-orchestrator/scripts/attach_regression_evidence.py`：把回归证据截图上传到
+  GitLab（`projects/<project>/uploads`）并更新 phase-3 的同一条 MR 评论——同一张图重复执行不会重复，
+  链接落在 run 状态的 `phase3.evidence_images`。
+- `mr_note_body()` 渲染回归报告目录（`- Report: <report_dir>`）与「### 回归结果截图」段。
+
+### 变更
+
+- **构建等待节奏归 DSH 定时任务**：MR 提交后首次 `+2.5 小时` 查一次，没好每 `30 分钟` 查一次，
+  run 进终态后删除该任务；插件与 systemd 都不再承担轮询。
+- `install_systemd_units.py` 默认**不再安装** `openharmony-ci-reconcile.timer`（`--reconcile-timer`
+  改为显式 opt-in，仅供历史环境回滚）；SKILL/操作手册/README/ci_route 同步改口径。
+
+### 测试
+
+- `test_phase3_runner.py` 新增 `RegressionEvidenceTests`（note 渲染报告目录与截图、无截图不渲染、
+  去重保序、上传命令落到 `projects/<encoded>/uploads`、返回缺 `markdown` 时报错）。
 ## [1.9.0] - 2026-11-10
 
 **状态机补漏：waiver 成为合法阶段、阶段闸门与 done 判据、轮次隔离；README 重写为「怎么用 + 回归怎么跑」。**

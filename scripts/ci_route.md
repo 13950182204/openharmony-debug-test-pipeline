@@ -36,16 +36,16 @@ GitLab API (glab, 只读)                    Jenkins (192.168.97.54, 只读)
    ▼                                            ▼
 ~/.local/state/openharmony-ci-orchestrator/runs/<run_id>.json
    ▲
-   │ systemd: openharmony-ci-reconcile.timer → ci_orchestrator.py reconcile
-   │          （只处理未终结的 run；--prune-days 归档旧 run）
+   │ DSH 定时任务（agent 侧）→ ci_orchestrator.py reconcile
+   │          （首次 +2.5h，之后每 30min；只处理未终结的 run，终态后删除任务）
    └── 认领成功后启动 openharmony-ci-phase3@<run-id>.service（受信任 runner：下载包/预检/OTA/回归）
 ```
 
-token 消耗点唯一：阶段推进时由模型调用一次 `reconcile`（或由定时器零 token 推动），
+token 消耗点唯一：阶段推进时由模型调用一次 `reconcile`（由 DSH 定时任务按 2.5h/30min 节奏推动），
 构建成功后才启动 phase-3 单元。
 
 已部署单元（本机）：
-- `~/.config/systemd/user/openharmony-ci-reconcile.timer` 与 `.service`（含显式 PATH）
+- `~/.config/systemd/user/openharmony-ci-reconcile.service`（含显式 PATH；定时器已不用）
 - `~/.config/systemd/user/openharmony-ci-phase3@.service`（KillMode=process）
 - `~/.config/systemd/user/openharmony-ci-webhook.service`（**legacy/停用**：平台信号来自 GitLab）
 - 配置：`~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）
