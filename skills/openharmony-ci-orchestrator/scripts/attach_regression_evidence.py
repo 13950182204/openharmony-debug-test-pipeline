@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -101,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = attach(args.state_dir, args.run_id, args.image)
-    except (runner.Phase3Error, runner.OrchestratorError, OSError) as error:
+    except (runner.Phase3Error, runner.OrchestratorError, OSError, subprocess.SubprocessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))

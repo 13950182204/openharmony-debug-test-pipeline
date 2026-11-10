@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-11-10
+
+**发布后自审的修补：脚本错误码统一、文档口径与参数修正。**
+
+### 修复
+
+- `attach_regression_evidence.py`：`glab` 超时/进程错误也走 `exit 2` 与中文报错（原先只捕获
+  `Phase3Error`/`OSError`，`subprocess.SubprocessError` 会抛栈）。
+- 操作手册安装示例去掉 `--keep-artifacts`（那是 `ci_orchestrator.py reconcile` 的参数，
+  `install_systemd_units.py` 不认识）。
+- `references/phase2-operations.md` 残留的「`reconcile` 每 5 分钟检查一次」改为 DSH 定时任务口径。
+
+### 验证
+
+- 用假 `glab` 做 CLI 端到端：上传 → 写 `phase3.evidence_images` → 建/更新评论；
+  重复执行不产生重复条目；缺图与上传失败均 `exit 2`。
+
 ## [1.10.0] - 2026-11-10
 
 **回归闭环补两块：构建等待节奏交给 DSH 定时任务（不再写 systemd 定时器），回归报告截图可回写 MR 评论。**

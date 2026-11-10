@@ -122,7 +122,8 @@ systemctl --user status 'openharmony-ci-phase3@<run-id>.service'
 ## legacy webhook（可选）
 
 `serve` 子命令仍保留（HMAC 校验、校验后拉取 Jenkins 构建 API），但**不再是主路径**：
-平台流水线本身就是要等的结果，`reconcile` 每 5 分钟检查一次即可。若启用它，只在
+平台流水线本身就是要等的结果，`reconcile` 由 DSH 定时任务按 +2.5h / 每 30 分钟推动，
+本机不再有定时器。若启用 webhook，只在
 systemd 环境文件里设置 `CI_WEBHOOK_SECRET`，并把监听地址配成 Jenkins 可达的地址。
 
 ## Phase 3 登记
