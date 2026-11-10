@@ -2,7 +2,7 @@
   "id": "mr260",
   "title": "输入法 Shift 切换导致 ACTS 文本事件失败",
   "budgets": {"total_s": 600},
-  "report": {"path": "/mnt/d/ohos/XTS6.1/ActsAceEngineNativeAPI20Test", "expect": {"total": 929, "passed": 928, "failed": 1, "modules": 1}},
+  "report": {"path": "/mnt/d/ohos/ai-presentation-demo/01-案例报告/ActsAceEngineNativeAPI20Test", "expect": {"total": 929, "passed": 928, "failed": 1, "modules": 1}},
   "triage": {"roots": [{"id": "A", "cases": ["ActsAceEngineNativeAPI20Test#testNODE_TEXT_AREA_ON_WILL_CHANGE0100"], "verdict": "product-framework", "route": "fix", "evidence": ["triggerKey(2047) 后断言失败；MR260 将 Shift 改为修饰键"]}]},
   "fix": {"kind": "hap", "build": "/mnt/d/ohos/XTS6.1/testcase/acts/testcases/kika_release_v1016b.hap", "build_sha256": "acd1b2c70857b7f5e1696415630e30f9fe37b1bda37e5d651f351e754267018e", "summary": "输入法 Shift 不再切换中英文，修复包 versionCode 1001016"},
   "mr": {"iid": 260, "host": "192.168.11.238", "project": "harmony/system/v9611/openharmony_V6.1", "url": "http://192.168.11.238/harmony/system/v9611/openharmony_V6.1/-/merge_requests/260", "head_sha": "ddde621d74487a7828883270da8f8096773a7909", "target_branch": "v6.1.0.35_lts"},
