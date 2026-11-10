@@ -64,7 +64,15 @@ export function buildLoopSkill(config: Config, root: string = packageRoot()): Sk
 
 ## 八阶段状态机
 
-阶段顺序: report → triage →（fix 或 waiver，按规则 1 二选一）→ mr → ci → ota → regression → done
+阶段顺序: report → triage → 之后分两条腿（按规则 1 二选一）：
+
+- **fix 腿**（根因在产品/框架侧）: fix → mr → ci → ota → regression → done
+- **waiver 腿**（根因在测试侧）: waiver → done（豁免资料齐备即收口；平台提交归 skill
+  \`openharmony-waiver-draft\` / \`ohos-xts-auto-reporter\`）
+
+阶段契约（顺序、分支、每阶段必需产物、允许的回退、done 判据）由
+\`python3 scripts/pipeline_state.py describe\` 输出。**本正文与操作手册都从它派生**：
+改契约只改脚本，不要只改文档。
 
 1. **report（测试报告输入）**: 确认测试报告目录 / 问题描述，必要时询问缺失信息。
    记录产物 reportDir。
@@ -88,9 +96,14 @@ export function buildLoopSkill(config: Config, root: string = packageRoot()): Sk
    目标驱动（每处修复都有可验证的判据）。修复后先跑最小验证（编译 / 单测 / 对应测试模块）。
    记录产物 fixSummary 与涉及文件列表。
 
-3b. **waiver（豁免材料，规则 1 的落点）**: 对判定为测试侧的问题逐项产出豁免证据
-   （失败 case 清单 + 失败原因 + 证据链 + 申请豁免理由），草稿用 skill \`openharmony-waiver-draft\`；
-   完成后记录产物 waiverRecords（记录/证据文件路径与覆盖的用例数）。
+3b. **waiver（豁免材料，规则 1 的落点）**: 对判定为测试侧的问题逐项产出豁免资料
+   （失败 case 清单 + 失败原因 + 证据链 + 申请理由），布局按本插件 README「豁免资料规范」
+   （R1–R8：一个模块的一个 Testsuite = 一份 txt + 一份 zip + 一条平台申请），
+   用 \`python3 scripts/verify_waiver_layout.py --exemption-dir <目录>\` 自检到 0 问题；
+   **允许用简单 txt 说明问题，资料够说明即可，不强制补大段证据**。草稿用 skill
+   \`openharmony-waiver-draft\`。完成后写状态：\`set waiver '{"waiverRecords": [...]}'\`，
+   每项形如 \`{"txt": "<套件>.txt", "zip": "<套件>-豁免材料.zip", "records": "<申请记录>", "cases": <覆盖用例数>}\`。
+   waiver 腿到此即可 \`set done\`，不必再走 mr/ci/ota/regression。
 
 4. **mr（MR 提交与六维审查）**: 加载 skill \`glab-mr-submit\`，用其
    \`create_glab_mr.py\` 生成合规标题（[动作] [芯片] [XTS] 说明）、标签与标准记录，
@@ -119,9 +132,13 @@ export function buildLoopSkill(config: Config, root: string = packageRoot()): Sk
    （或由 CI 编排的 phase-3 回归 profile 驱动），把结果与失败表逐条对比。
    记录产物 regressionResult（通过数 / 失败数 / 残留项）。
 
-8. **done / 回到 fix**: 回归通过 → 阶段 done，汇总闭环记录（MR 链接、构建号、
-   OTA 摘要、回归结论）向用户报告；回归失败 → 回到 fix 阶段，按 Karpathy 规范继续修复，
-   走 glab-mr-submit 的 same-MR 修复流程在原 MR 上追加提交，重新触发 ci → ota → regression。
+8. **done / 回到 fix**: 满足 done 判据之一才能 \`set done\`——
+   回归结论判为通过（\`status: PASS\`，或 \`failed: 0 且 total > 0\`，或只能跑 smoke 时
+   \`{"status": "INCONCLUSIVE", "smokeOnly": true}\` 明示降级），**或** waiver 腿的
+   waiverRecords 齐备。走过 MR 的轮次必须有通过的回归——回归没通过不能宣布闭环。
+   回归通过 → 汇总闭环记录（MR 链接、构建号、OTA 摘要、回归结论）向用户报告；
+   回归失败 → 回到 fix 阶段，按 Karpathy 规范继续修复，走 glab-mr-submit 的 same-MR
+   修复流程在原 MR 上追加提交，重新触发 ci → ota → regression。
 
 ## 纪律
 

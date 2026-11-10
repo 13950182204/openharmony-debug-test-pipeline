@@ -2,17 +2,59 @@
 
 本仓库（openharmony-debug-test-pipeline）的 OpenHarmony 兼容性闭环插件。版本号遵循语义化版本（SemVer）。
 
-## [1.7.1] — 2026-11-07
-
-**设置页「GitLab 凭据」说明改为一句话。**
-
-### 变更
-
-- `packages/gitlab-credentials/src/client/panel.tsx`：原来三句（校验顺序、GET /api/v4/user、WSL 调 glab、
-  路径与权限、不落日志）压成一句「令牌存本机 `~/.dsh/gitlab-credentials.json`（0600）；保存时校验并同步 glab，不落日志。」
-  细节留在 badge 的 title 与文档里，设置页不再出现大段说明。版本 1.7.0 → 1.7.1，子包 0.1.7 → 0.1.8。
-
 ## [Unreleased]
+
+## [1.9.0] - 2026-11-10
+
+**状态机补漏：waiver 成为合法阶段、阶段闸门与 done 判据、轮次隔离；README 重写为「怎么用 + 回归怎么跑」。**
+
+### 修复（不闭环的四条硬伤）
+
+- **waiver 不是合法阶段**：闭环 skill 正文写着 3b waiver 并要求 `stage=waiver`，脚本的
+  `VALID_STAGES` 却没有它——模型按正文执行必被拒。现在 `waiver` 是正式阶段，写入时校验
+  `waiverRecords`（非空清单；每项 `txt` / `zip` / `records` / `cases`，`cases` 必须是整数）。
+- **阶段可越级、done 无判据**：`set` 原先任何阶段都接受。现在 `check_advance()` 拦三类问题——
+  空转（阶段必需产物全缺，如 `mr` 没 `mrIid`）、越级（`mr` 及之后要求前序主线阶段已登记，
+  force 可越过）、`done` 判据（回归判为通过 **或** waiver 资料齐备；走过 MR 的轮次必须有通过的回归）。
+- **回归 INCONCLUSIVE 也能宣布闭环**：`regression_conclusion()` 统一口径——`status: PASS`
+  或 `failed: 0 且 total > 0` 算通过；`INCONCLUSIVE` 只有显式 `smokeOnly: true` 才算，
+  否则视为没通过。
+- **两轮产物串在一起**：换 `reportDir` 时 `archive_previous_round()` 把上一轮归档进
+  `state["runs"][<旧目录名>]`（保留最近 5 轮）再清空当前轮，第二轮不会继承第一轮的
+  `mrIid` / `otaSerial`。
+- **报告路径失效仍能推进**：`report` 阶段校验 POSIX 形态的 `reportDir` 是否存在（`--force` 可越过；
+  Windows 盘符 / UNC 不校验，交给调用方）。
+
+### 新增
+
+- `pipeline_state.py describe`：输出阶段契约（`order` / `branches` / `required` / `backtracks` /
+  `doneRequires`）。skill 正文、README 与本手册都从这一份派生，避免"正文写了、脚本不认"再现。
+- `pipeline_state.py set --force`：越过空转/回退检查；`done` 判据不可越过。
+- 契约常量：`STAGE_ORDER`、`BRANCH_STAGES`、`BACKTRACKS`、`STAGE_REQUIRED`。
+
+### 文档
+
+- `README.md` 重写：只讲**怎么装、怎么用、回归怎么跑**。新增「回归流程」整节
+  （前置条件、判据表、失败后回 fix、两个高频坑）、`done` 判据与两条腿的收口差异；
+  删掉大段宿主 SDK 解析与逐版本比对细节（保留结论，过程留在手册与 CHANGELOG 旧段）。
+- `src/loop-skill.ts`：阶段顺序改为两条腿；3b waiver 写明 `set waiver` 的产物结构与
+  「允许简单 txt」；`done` 写明判据；正文声明契约以 `describe` 为准。
+- `docs/操作手册.md`：阶段总表补契约说明与两条腿收口差异；第六节补 `6.0 与状态机的关系`；
+  能力边界表订正 `-MR-a537` 那条——**A333/A537 同源，共用 `-MR-a333`**，芯片由 job 后缀派生。
+
+### 测试
+
+- `scripts/tests/test_pipeline_state.py` 新增 `StageGateTests`（13 项）：waiver 形状、越级拦截、
+  force 边界、done 判据、`regression_conclusion` 矩阵、轮次归档与保留上限、`describe` 输出、
+  CLI 接受 `waiver`。Python 单测 57 → 70。
+
+### 验证（1.9.0）
+
+- `tsc --noEmit` 0 错误；`vitest` 46 通过（6 个文件）。
+- `pytest scripts/tests` 70 通过；`skills/openharmony-ci-orchestrator/tests` 84；
+  `skills/glab-mr-submit/tests` 15；`test/tools/undefined_names.py` = NAMES OK。
+
+## [1.8.0] - 2026-11-08
 
 **新增「豁免资料目录与提交模型」规范（R1–R8）与只读校验器。**
 
@@ -34,6 +76,38 @@
 
 - `scripts/tests/test_verify_waiver_layout.py`：覆盖合规目录、三节缺失、模块/套件混用（R8）、
   缺 zip 的严格与 legacy 口径、records 不一致、退出码与 Windows↔`/mnt` 路径等价。
+
+### DSH `0.2.2-rc.1` 兼容
+
+- `package.json` 的 `dsh.compatibility.dshReleases` 补 `"0.2.2-rc.1": "compatible"`；`engines.dsh`
+  维持 `>=0.2.1-rc.1 <0.3.0`（`includePrerelease` 下 `0.2.2-rc.1` 满足，门禁判定口径不变）。
+- 依据：本机宿主 2026-11-08 升到 DSH `0.2.2-rc.1` 并重启后，本插件（当时装机为 1.7.1 tarball）
+  正常加载，`mr_review_six` 等工具可用，未观察到破坏性变更。
+- 构建/类型检查基线仍是 `0.2.1-rc.5`（`devDependencies` 未随本次发布升级），故本条只声明
+  **运行时兼容**，不等同于类型基线升级。
+- `README.md`「DSH 版本兼容」同步登记 `0.2.2-rc.1` 与本条证据。
+
+### 版本与标签
+
+- 补打 `v1.7.1`（指向 `a4760f4`）：该版本 2026-11-07 已出 tarball 并装进桌面 profile，此前漏打 tag。
+- 本次发布打 `v1.8.0`，提交与两个 tag 一并推送到 `origin`。
+
+### 验证（1.8.0）
+
+- `tsc --noEmit` 0 错误；`vitest` 46 通过（6 个测试文件）。
+- Python 三套通过：`scripts/tests` 56、`skills/openharmony-ci-orchestrator/tests` 84、
+  `skills/glab-mr-submit/tests` 15。
+- 本次未改 `src/` / `scripts/`，`lib/` 无需重建；提交后工作区干净。
+
+## [1.7.1] — 2026-11-07
+
+**设置页「GitLab 凭据」说明改为一句话。**
+
+### 变更
+
+- `packages/gitlab-credentials/src/client/panel.tsx`：原来三句（校验顺序、GET /api/v4/user、WSL 调 glab、
+  路径与权限、不落日志）压成一句「令牌存本机 `~/.dsh/gitlab-credentials.json`（0600）；保存时校验并同步 glab，不落日志。」
+  细节留在 badge 的 title 与文档里，设置页不再出现大段说明。版本 1.7.0 → 1.7.1，子包 0.1.7 → 0.1.8。
 
 ## [1.7.0] - 2026-11-04
 

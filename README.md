@@ -1,98 +1,51 @@
 # openharmony-debug-test-pipeline
 
-OpenHarmony「修改-调试-测试」闭环 DSH 插件（运行时插件，bundle 聚合包形态）。
+OpenHarmony「修改-调试-测试」闭环 DSH 插件：把测试报告一路走到回归验证，或者走到豁免资料交付。
 
-> 📖 **流程与操作手册见 [docs/操作手册.md](docs/操作手册.md)**（八阶段流程、CI 契约、状态字段、日常操作、豁免资料规范、异常速查、双宿主环境规则、能力边界）。
+> 完整流程、CI 契约、状态字段、豁免资料规范、异常速查见 **[docs/操作手册.md](docs/操作手册.md)**。
+> 本 README 只讲三件事：**怎么装、怎么用、回归怎么跑**。
 
-把五个 OpenHarmony 调测 skill 打包进一个 DSH 插件，串成一条八阶段闭环流水线，
-每个 skill 同时保持独立可调用（模块化）。skill 已从 `~/.codex/skills` **拷贝进插件**
-并针对 DSH 做了定制改造（见下文「DSH 定制清单」），仓库自包含，不依赖本机 Codex 环境。
+## 一、它是什么
 
-## 插件包含什么
-
-| 模块 skill | 作用 | 独立使用示例 |
-|---|---|---|
-| `openharmony-test-report-triage` | 测试报告分诊：失败表、源码定位、hilog 证据、根因分类、上游核查 | 「分析这份测试报告」 |
-| `karpathy-guidelines` | 编码行为准则：思考先行、简单优先、外科手术式改动、目标驱动 | 「按 Karpathy 规范修这个问题」 |
-| `glab-mr-submit` | GitLab MR 提交/审查/修复闭环：合规标题、标签、截图上传、六维 subagent 审查 | 「提交这个 MR」 |
-| `openharmony-ci-orchestrator` | 平台 CI 观察与认领：读 GitLab 流水线、认领 Jenkins 门禁构建产物、phase-3 OTA/回归交接（**不触发构建**） | 「认领平台 CI 的构建并做 OTA」 |
-| `openharmony-ota-upgrade` | OTA 升级闭环：预检、hdc 传输、updater、回连验证 | 「OTA 升级到设备」 |
-| `openharmony-debug-loop` | **闭环编排**（本插件新增）：八阶段状态机串联以上模块 | 「跑一遍完整闭环」 |
-| `openharmony-demo-loop` | **演示模式**：客户/评审面前 10 分钟走完八阶段，真跑与预置证据都明说，独立状态不污染真实流水线 | 「演示模式，用 mr260 跑一遍」 |
-
-闭环状态机：
+一条带状态机的流水线：每完成一个阶段就把产物写进 `~/.dsh/pipeline-state.json`，
+换会话、换机器都能接着上次继续；每个阶段对应一个可独立调用的 skill，也可以只跑其中一段。
 
 ```
-report → triage → fix → mr → ci → ota → regression → done
-  测试报告  分诊    修复   MR   构建   升级     回归        （失败回到 fix）
+report ─→ triage ─┬─→ fix ─→ mr ─→ ci ─→ ota ─→ regression ─→ done   （产品/框架侧问题）
+                  └─→ waiver ─────────────────────────────────→ done   （测试侧问题，只交豁免资料）
 ```
 
-## 安装
+- **两条腿**：根因在产品/框架侧就走 `fix` 腿（要 MR、CI、OTA、回归）；根因在测试侧就走 `waiver` 腿，
+  资料齐备即收口，不必碰 MR 与设备。
+- **阶段契约以脚本为准**：顺序、分支、每阶段必需产物、允许的回退、`done` 判据，
+  都由 `python3 scripts/pipeline_state.py describe` 输出；README 与 skill 正文都从它派生。
+  写错阶段顺序会被当场拒绝（例如还没登记报告就想跳到 `ota`）。
 
-本插件支持**两种部署形态**，同一份源码：
-
-| | A. WSL 侧 dsh（原生） | B. DSH Desktop（宿主 Windows、执行 WSL） |
+| 模块 skill | 干什么 | 独立调用示例 |
 |---|---|---|
-| 插件加载 | WSL 侧 Node | **Windows 侧 Node**（desktop profile） |
-| 命令执行 | WSL（`bash` 就是 WSL） | WSL（`bash` 工具转发进发行版） |
-| 适用 | `dsh web`（`:3080`）、headless、交接会话 | 桌面 App 的 GUI 会话（`:19387`） |
-| 路径口径 | 宿主路径即模型路径，**无需配置** | 需 `wslPackageRoot` + `stateFile`（见下） |
+| `openharmony-test-report-triage` | 失败表、源码定位、hilog 证据、根因分类、上游核查 | 「分析这份测试报告」 |
+| `karpathy-guidelines` | 修复行为准则：先假设、最小改动、外科手术式变更 | 「按 Karpathy 规范修这个问题」 |
+| `openharmony-waiver-draft` | 豁免草稿（只保存，不提交） | 「按豁免规范写这批资料」 |
+| `glab-mr-submit` | MR 创建 + 六维审查 + same-MR 修复 | 「提交这个 MR」 |
+| `openharmony-ci-orchestrator` | 只读观察平台 CI、认领门禁构建产物、phase-3 交接 | 「认领这次 CI 的构建」 |
+| `openharmony-ota-upgrade` | 预检、传输、updater、回连验证 | 「OTA 升级到设备」 |
+| `openharmony-debug-loop` | 八阶段编排（本插件新增） | 「跑一遍完整闭环」 |
+| `openharmony-demo-loop` | 演示模式，独立状态，不污染真实流水线 | 「演示模式，用 mr260 跑一遍」 |
 
-> 两个运行时容易混淆，先认清分工：
-> **桌面 App 能跑 agent loop**（系统提示、skill 目录、工具注册都在 Windows Node 里），
-> 而 `bash`/`read`/`write` 由 `dsh-wsl-workspace` 转发进 WSL 执行。所以「脚本必须跑在 WSL」
-> 与「插件在 Windows 侧加载」并不冲突——**Linux 工具链不构成移植障碍**，因为脚本从来不经过
-> 这里的 Node，而是由模型在会话 bash 里调用。
+## 二、安装
 
-### A. 装到 WSL 侧（原生，最简单）
+两种部署形态，同一份源码：WSL 侧原生 `dsh`（最省事），或 DSH Desktop（插件跑在 Windows、脚本转发进 WSL）。
+
+**A. WSL 侧**
 
 ```bash
 pnpm build
 dsh plugin --profile web add link:/home/cx/os/openharmony-debug-test-pipeline
 ```
 
-**重启 dsh web 后生效**。验证：
-
-```bash
-dsh --profile web --dump-config | grep -A3 oh-debug-pipeline
-```
-
-> 注意：若 profile 的 `cordis.patch.yml` 里已手工 mount 过同名行，先移除，
-> 避免插件双实例。
-
-### B. 装到 DSH Desktop（GUI 会话里可用）
-
-**一条 GitHub 地址装全**：插件页 → **添加插件**，填
-
-```
-https://github.com/13950182204/openharmony-debug-test-pipeline
-```
-
-安装后只有一个 bundle。GitLab 凭据（`@superjunier/dsh-gitlab-credentials`）自 1.5.0 起是本插件的
-**内嵌子组件**：源码仍在仓库的 `packages/gitlab-credentials/`，构建产物
-`packages/gitlab-credentials/lib` 随本包分发，`apply()` 把它作为子插件挂在同一棵树里，
-浏览器半侧由本包的 `lib/client.js` 承担（设置页里仍有「GitLab 凭据」分节）。
-**不需要**再单独安装第二个插件，也不需要改 pnpm 配置（不依赖任何传递 git 依赖）。
-
-```bash
-dsh --profile desktop --dump-config | grep -A3 oh-debug-pipeline
-```
-
-> 从 1.4.x 升级：profile 里旧的独立 `@superjunier/dsh-gitlab-credentials` 依赖与 bundles
-> 选中项应当删掉（保留也不会双挂——内嵌组件有进程级单实例守卫，但两处都留着会让插件列表
-> 多出一个空 bundle）。旧 `cordis.patch.yml` 里的 `- id: gitlab-credentials` 覆盖行可以留着，
-> 没有对应行时会被忽略；凭据配置改到本行的 `config.credentials` 下（见下）。
-
-离线/内网环境仍可退回本地 tarball 安装：先 `pnpm pack`，再在弹窗里填 tarball 的
-Windows 绝对路径。必须用 tarball / Windows 侧目录，**不能用 `link:` 或 `file:` 指向
-WSL 内的仓库**：
-
-- pnpm 会把 UNC 规格改写成 `/wsl.localhost/...`（不存在的路径）；
-- 用 Windows 符号链接/junction 指到 `\\wsl.localhost\...` 也**不可行**——`Test-Path` 为真，
-  但 Windows Node 无法穿越（`existsSync` 为假），插件会加载失败。
-
-装完后在 desktop profile 的 `cordis.patch.yml` 加一行 config（**否则 skill 正文里的路径是
-Windows 路径、模型在 WSL 里跑不动**；`credentials.storeFile` 让桌面实例与 WSL 侧实例共用同一份凭据）：
+**B. DSH Desktop**：插件页 →「添加插件」→ 填
+`https://github.com/13950182204/openharmony-debug-test-pipeline`。装完在 desktop profile 的
+`cordis.patch.yml` 补这几行（不配则在 Windows 宿主上路径不可用）：
 
 ```yaml
 - id: oh-debug-pipeline
@@ -106,197 +59,119 @@ Windows 路径、模型在 WSL 里跑不动**；`credentials.storeFile` 让桌�
       announceToAgent: false
 ```
 
-- `wslPackageRoot`：把 `{{SKILLS_DIR}}`/脚本路径渲染成 WSL 可用路径；
-- `stateFile`：**宿主**侧 `/pipeline status` 的 Node 读取用，写成 `//wsl.localhost/...`；
-- `stateFileModel`：**模型**执行用，必须是 WSL 视角路径（`/home/cx/...`）；
-- `credentials.storeFile`：内嵌凭据组件的凭据文件（宿主可写的 WSL 视角路径）；
-- `credentials.announceToAgent`：权威实例在 WSL 侧时置 `false`，避免两处都向模型自我宣告。
+`stateFile` 是宿主读（UNC 形态），`stateFileModel` 是模型读（WSL 视角）——**两者必须指向同一个文件**。
+内网/离线改用 `pnpm pack` 出的 tarball 安装（Windows 侧路径），不要用 `link:`/`file:` 指向 WSL 仓库。
+装完**重启 DSH** 生效；GitLab 凭据在设置页「GitLab 凭据」填写。
 
-两者指向同一个文件（实测两侧 `stat` 与 `sha256` 一致），但**形态必须分开**：Windows 侧的
-`//wsl.localhost/...` 在 WSL 里既不存在、`python3` 还会静默退回**空状态**而不报错——
-把 UNC 形态写进 skill 正文会让模型看到「（未开始）」这种假状态。
+## 三、使用方法
 
-未配置 `wslPackageRoot` 时插件会在 Windows 宿主上打一条 warn 提示。
+**起一轮闭环**：直接说「跑一遍完整闭环，报告在 `<报告目录>`」。编排 skill 会按状态机推进，
+每个阶段结束先汇报、等授权——**创建 MR 与 OTA 是真实动作，必须你点头**。
 
-### DSH 版本兼容
-
-- **构建与类型检查基线：`0.2.1-rc.5`**（`devDependencies` 的 `@deepseek-ai/dsh-*`）。
-  `package.json` 同时声明：
-  - `engines.dsh`：`>=0.2.1-rc.1 <0.3.0`（DSH 安装/启动时的兼容判定）；
-  - `dsh.engines.dsh`：同一范围（插件市场展示用）；
-  - `dsh.compatibility.dshReleases`：登记 `0.2.1-rc.1` 至 `0.2.1-rc.5` 全部 compatible。
-- **rc.3 → rc.5 无破坏性变更**（1.7.0 已实测）。依据：从 npm 取 `0.2.1-rc.3` /
-  `rc.4` / `rc.5` 三份宿主包逐树比对，`dsh`、`dsh-tools`、`dsh-agent`、`dsh-subagent`、
-  `dsh-skill`、`dsh-commands`、`dsh-llm`、`dsh-settings`、`dsh-system-prompt`、
-  `dsh-host-webserver`、`dsh-client-ui-settings`、`dsh-client-connection` **逐字节一致**
-  （仅 `package.json` 版本字段不同）；其余包（`dsh-app-boot`、`dsh-web-app`、`dsh-base`、
-  `dsh-hmr`、`dsh-plugin-manager` 等）也只有 `package.json` 变化。唯一代码变化在
-  `dsh-cordis-client-runner/lib/client.js`，内容全是 slot 契约注释/元数据
-  （`conversation.chat.reasoning.body` 的 owner props 增加 `rawText`），与本插件无关。
-  官方 release notes 印证：rc.4 只修「ACP 模式诊断输出混入 stdout」，rc.5 只有「优化
-  对话中思考内容的展示效果」。兼容门禁逻辑也没变——有 `engines.dsh` 时**只按它判定**，
-  本插件范围对 rc.5 满足，故插件在 rc.5 上正常加载（1.6.2 在 rc.5 桌面端实测可用，
-  基线升到 rc.5 后 `typecheck` / `build` / 测试同样全绿）。
-- **0.2.1-rc.1 的破坏性变更（已适配）**：子代理 API 由 `ctx.subagents.start(name, request)`
-  改为 **`ctx.subagents.startActivation(spec)`**（`provider` / `label` / `request` / `signal` /
-  `delivery` 五个顶层字段，`request` 内不再携带 `label` 与 `signal`）。
-  `mr_review_six` 已改为该形状，`delivery: 'caller'` 保持“只把结果返回给调用方”的原语义。
-- **类型增强陷阱**：`ctx.subagents` 的类型来自 `@deepseek-ai/dsh-subagent` 的
-  `declare module '@deepseek-ai/cordis'`；该包**必须被 import 进编译程序**才会生效，
-  否则 tsc 报 `Property 'subagents' does not exist on type 'Context'`。
-  本仓库因此保留一个显式类型 import（`SubagentActivation`）。
-- **rc.2 / rc.3 没有新的破坏性变更**：`dsh-tools` / `dsh-agent` / `dsh-subagent` /
-  `dsh-skill` / `dsh-commands` 的 `lib/` 与类型声明和 rc.1 **逐字节一致**（仅
-  `package.json` 里的版本号与 peer 范围不同），因此调用代码无需再改；基线升到 rc.3 后
-  `typecheck` / `build` / 40 项 vitest 全绿。真正需要改的是**依赖形态**（下节）。
-
-### 宿主 SDK 的解析：`@deepseek-ai/dsh-tools` 只做 peer
-
-DSH 0.2.1 起在 profile 上装了**模块解析拦截层**：profile 内插件（含 `link:` 安装）解析
-`@deepseek-ai/*` 时会回落到**安装目录**（`app.asar`）里的宿主副本；`link:` 安装的插件
-只要在 `peerDependencies` 里声明了包名，即便其仓库 `node_modules` 里有同名包，也会优先
-路由到宿主副本。因此本插件：
-
-- 把 `@deepseek-ai/dsh-tools` 声明为 **`peerDependencies`**（`^0.2.1-rc.1`），运行时由宿主提供；
-- 只在 `devDependencies` 保留精确的 `0.2.1-rc.5` 供类型检查与构建；
-- **没有** `postinstall` / `link-runtime-deps`，也**不往 profile 里装任何宿主 SDK**。
-
-为什么不能把 `dsh-tools` 装进 profile（1.3.0 的旧做法）：profile 里一旦出现
-`node_modules/@deepseek-ai/dsh-tools`，解析就优先落到这个副本——连 `dsh-base` 里的
-`tools` 插件行本身都会加载它。两份模块实例的调度器 `Symbol` 不同，`tools` 服务无法
-激活，启动直接失败（实测 0.2.1-rc.3：17 个插件挂在 `Missing services: tools`，
-`1 required plugin did not activate`）。**“版本号相同”不够——模块实例必须相同。**
-
-安装/升级 DSH 后的推荐顺序：
+**看状态 / 手动介入**：
 
 ```bash
-pnpm install          # 只装 devDependencies 的 rc.5，用于构建
-pnpm build            # 产出 lib/（安装 tarball 时用的就是它）
-dsh --profile desktop --dump-config   # 确认 bundles/patch 组合无误
+/pipeline status                                   # 当前阶段、产物、最近事件
+python3 scripts/pipeline_state.py describe         # 阶段契约（改流程前先看这个）
+python3 scripts/pipeline_state.py note triage "..." # 记事件，不动阶段
+python3 scripts/pipeline_state.py reset            # 清空重来
 ```
 
-排障：
+阶段推进由模型在会话里用 `set` 完成，产物形状有校验（例如 `failedCases` 必须是
+`模块#用例` 清单而不是数量，写成数量会当场报错）。`--force` 能越过"越级/回退"检查，
+但 **`done` 的判据越不过去**。
 
-- 先确认 profile 里**没有**宿主 SDK 副本：
-  PowerShell：`Test-Path "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@deepseek-ai\dsh-tools"`
-  应为 `False`；若为 `True`，删掉并重装（`pnpm remove @deepseek-ai/dsh-tools`）。
-- 再确认 profile 的 `dsh.profile.bundles` 里有 `openharmony-debug-test-pipeline`。
-- 不要在 `/pipeline` 后面放自然语言；该命令只接受 `status` 或 `reset`，实际闭环任务
-  请直接作为普通对话发送。
+**换一份新报告**会自动把上一轮归档进 `runs[]`（保留最近 5 轮），当前轮从空状态开始——
+两轮的 MR 号、OTA 结果不会串。
 
-## 配置
+**两个实用的常见入口**：
 
-| 配置项 | 默认值 | 说明 |
+- 只分诊：「分析这份报告，给出根因和该修还是该豁免」
+- 只提 MR：「这批改动提交 MR」；只认构建：「认领这次 CI 的构建产物」
+
+> `/pipeline` 只接 `status` 和 `reset`，别在后面接自然语言；真正的任务是普通对话。
+
+## 四、回归流程（重点）
+
+回归要回答一句话：**这次 OTA 之后，原来失败的那些用例还失败吗？**
+
+**前置条件**
+
+1. 本轮 `triage` 已登记 `failedModules`（xdevice 模块名，不是测试类名）与 `failedCases`；
+   没登记时回归无从下手，只会得出 `INCONCLUSIVE`。
+2. 平台 CI 已出包（门禁构建产物：`update.zip` / `updater_full.zip`），且**没有超过 7 天**——
+   过期后只能重跑平台流水线，本插件不会替你触发构建。
+3. 有一台和构建产物**同芯片**的在线设备。芯片按 job 后缀派生（`OpenHarmony-V6.1-MR-a333` → `a333`），
+   A333 与 A537 同源、共用 `-MR-a333`，不需要为 A537 单独配 profile；新芯片才要加 profile 与设备池。
+4. 有受信任的 phase-3 profile（负责下载/预检/OTA/回归），profile 里的设备序列号要与在线设备一致。
+
+**跑**：`ci` 阶段认领构建 → `ota` 阶段升级设备 → `regression` 阶段在升级后的设备上重跑
+`failedModules`（或由 profile 驱动 phase-3 回归）→ 与失败表逐条对比后 `set regression`。
+
+**判据（写 `regressionResult`）**
+
+| 结论 | 写法 | 能否 `done` |
 |---|---|---|
-| `stateFile` | `~/.dsh/pipeline-state.json` | 流水线状态文件（**宿主** Node 读取用） |
-| `stateFileModel` | 同 `stateFile` | 同上文件的**模型**执行路径；Windows 宿主上必须给成 WSL 视角路径 |
-| `wslPackageRoot` | 空 | 插件包的 WSL 路径；Windows 宿主上必填，否则 skill 正文是 Windows 路径 |
-| `reviewLadder` | 两档（pro/flash） | 六维审查子代理的模型档位表 |
-| `credentials` | 见下 | 内嵌 GitLab 凭据子组件的配置：`enabled` / `announceToAgent` / `storeFile` |
-| `demoStateFile` | `~/.dsh/demo/state.json` | 演示模式状态文件（宿主读）；与 `stateFile` 完全独立 |
-| `demoStateFileModel` | 同 `demoStateFile` | 演示模式状态文件（模型口径），理由同 `stateFileModel` |
+| 全通过 | `{"status": "PASS"}` | 可以 |
+| 失败数为 0 | `{"failed": 0, "total": 44}` | 可以 |
+| 只能跑 smoke，未做功能回归 | `{"status": "INCONCLUSIVE", "smokeOnly": true}` | 可以，但要**明示降级**并在汇报里说清没验什么 |
+| 回归失败 | `{"status": "FAIL", "failed": 2, "total": 44}` | 不可以，回 `fix` 继续修 |
+| 缺登记 | — | 不可以 |
 
-可在 profile 的 `cordis.patch.yml` 覆盖该行 config，或在 web GUI
-Settings → 插件配置 中调整。
+走过 MR 的轮次必须有通过的回归；`INCONCLUSIVE` 不写 `smokeOnly` 视为**没通过**——
+不允许拿一个"没结论"宣布闭环。
 
-## 使用
+**回归失败之后**：阶段回 `fix`，在原 MR 上追加提交（same-MR 修复），再走一遍 `ci` → `ota` → `regression`；
+不要新开一轮报告来绕过失败记录。
 
-- **完整闭环**：对 agent 说「跑一遍完整闭环 + 测试报告路径」，编排 skill 会按状态机推进，
-  每个阶段结束向你汇报并等待授权（创建 MR / OTA 为真实动作，必须授权）。
-- **单独一个模块**：直接说「提交这个 MR / 分析这份报告 / 认领平台 CI 的构建并 OTA / OTA 升级」，
-  只加载对应 skill，不影响其他模块。
-- **CI 阶段不触发构建**：MR 提交后 GitLab 平台自带 CI（`openharmony-mr-gate` → Jenkins
-  `OpenHarmony-V6.1-MR-Gate` → `OpenHarmony-V6.1-MR-<芯片>`）自动跑门禁并归档固件/OTA；
-  本插件只**只读观察**并**按 MR 身份认领**那次构建的产物，用于后续自动 OTA 与回归。
-- **流水线状态**：`/pipeline status` 查询当前阶段与产物；`/pipeline reset` 重置。
-- **演示模式**（对外演示专用，`~/.dsh/demo/` 独立状态，**绝不写真实流水线状态**）：
-  `python3 scripts/demo/democtl.py preflight --case mr260` 做 8 项环境预检；
-  `start --case mr260 --lane a` 起一条可跑通八阶段的演示线；`/demo status` 看进度与
-  产物来源（● live / ◐ local-staged / ○ recorded）。完整 runbook 见
-  `docs/演示模式.md`，脚本说明见 `scripts/demo/README.md`，配套 skill
-  `openharmony-demo-loop`。
+**两个高频坑**
 
-### 豁免资料规范与校验（3b waiver）
+- 设备不在 profile 的 `devices[]` 里 → 认领/OTA 前就失败；先对照 `hardware_compatibility` 与序列号。
+- 门禁包过期或设备被别的流水线占用 → 先看 `~/.local/state/openharmony-ci-orchestrator/runs/` 的运行记录，
+  不要重复触发构建。
 
-测试侧问题的豁免材料有固定模型（完整规则见手册第六节）：**一个模块的一个 Testsuite = 一个
-`<套件>.txt` + 一个 `<套件>-豁免材料.zip` + 一条平台申请**，同模块多套件必须分文件、分申请、分单号，
-禁止合并成模块级一条。txt 必须是三节式（1. 失败用例 / 2. 失败原因 / 3. 申请豁免理由），佐证放同模块
-`evidence/` 且文件名带 `<套件>-` 前缀，zip 内只装本套件 txt 与佐证；平台「豁免原因」取第 3 节全文，
-「豁免附件」只能传单个 zip。只保存草稿，绝不提交。
+## 五、豁免资料（waiver 腿）
 
-提交前用只读校验器自检（支持 Windows / WSL 路径）：
+测试侧问题的资料有固定模型：**一个模块的一个 Testsuite = 一份 `<套件>.txt` + 一份
+`<套件>-豁免材料.zip` + 一条平台申请**，目录按 `exemption/<测试大项>/<模块>/` 摆，
+同模块多套件必须分文件、分申请。**允许用简单 txt 说明问题**，够说清"哪条用例、为什么是测试侧、
+证据在哪"即可；但命名、层级、zip 成对关系要合规。
+
+交付前用只读校验器自检到 `0 问题`：
 
 ```bash
-python3 scripts/verify_waiver_layout.py \
-  --exemption-dir '/mnt/d/ohos/XTS6.1/DHong/DH-76AM-HS26A/exemption/Acts' \
-  --records '/mnt/d/ohos/XTS6.1/DHong/DH-76AM-HS26A/exemption/Acts/waiver-records-20261105.json'
+python3 scripts/verify_waiver_layout.py --exemption-dir <exemption目录> [--records <records.json>]
 ```
 
-它逐项检查 txt 命名、三节非空、`模块#套件#用例` 是否与目录/文件名一致、evidence 引用是否存在、
-每个套件是否有成对 zip 且 zip 内容完整、records 与套件是否一一对应且用例数一致；输出
-`汇总：X 模块 / Y 套件 / Z 用例 / N 问题`，退出码 `0` 无问题 / `1` 有问题 / `2` 参数错误。
-历史目录可加 `--allow-legacy`（非规范命名只警告）。
+退出码 `0` 无问题 / `1` 有问题 / `2` 参数错误；历史目录可加 `--allow-legacy`。
+资料齐备后 `set waiver '{"waiverRecords": [...]}'` → `set done`。
+**本插件只产出与校验资料，不上传、不提交平台**——平台申请提交归 `ohos-xts-auto-reporter` 插件。
 
-DH-76AM-HS26A 真实验收基线（2026-11-06）：**14 模块 / 34 套件 / 44 用例 / 0 问题**。
+## 六、边界与安全
 
-模型在每个阶段结束时通过 `scripts/pipeline_state.py` 把产物（`set`）、事件（`note`）与
-**token 用量快照**（`tokens <stage>`，读取 `~/.dsh/storages/session_projcache.json` 中当前
-会话的 uncachedInput/output/cacheRead 累计）写入状态文件；状态文件是闭环的唯一事实来源，
-跨会话可续。每个阶段还把流程细节（证据路径、关键日志行、根因分析）追加写入
-`~/.dsh/pipeline-runs/<日期>-<报告名>.md` 运行日志，供后续优化插件复盘。
+- 真实动作（建 MR、OTA）必须授权；**从不触发 Jenkins 构建**，门禁由平台 CI 驱动，本插件只读观察 + 认领。
+- 设备操作前先 `hdc list targets` 确认唯一目标。
+- 状态文件损坏或版本不受支持时**保留原文件并报错**，不静默重建。
+- Jenkins / GitLab 凭据只从 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）或进程环境读取，
+  不写入状态文件或 MR 文本。
+- 已知边界：功能回归 profile 未配置时回归只能出 `INCONCLUSIVE`（需明示 `smokeOnly`）；
+  XTS-only 变更没有设备回测；门禁包 7 天后不可取；无告警通道，靠巡检发现失败。
 
-## 开发
+## 七、版本与兼容
+
+运行时要求 DSH `>=0.2.1-rc.1 <0.3.0`（`engines.dsh`），构建基线 `0.2.1-rc.5`。
+已登记兼容的宿主版本见 `package.json` 的 `dsh.compatibility.dshReleases`（0.2.1-rc.1…rc.5、0.2.2-rc.1）。
+
+从 1.7.x 升级：`/pipeline reset` 后重新登记报告即可，旧状态文件仍可读。
+从 1.4.x 升级：profile 里旧的独立 GitLab 凭据插件依赖要删掉（自 1.5.0 起是本插件内嵌子组件）。
+
+## 八、开发与自检
 
 ```bash
-pnpm install
-pnpm build          # tsc 产出 lib/（TypeScript 5.9，rewriteRelativeImportExtensions）
-pnpm test           # vitest：frontmatter 解析 / 占位符替换 / 状态文件 / provider 接线
-pnpm test:python    # python 单测：pipeline_state 契约校验 / ci_orchestrator / glab / verify_waiver_layout
+pnpm typecheck && pnpm test && pnpm test:python   # 类型 / vitest / python 单测
+python3 test/tools/undefined_names.py             # skill 正文里引用的脚本名是否都存在
 ```
 
-### Windows 侧重装（DSH Desktop）
-
-在 Windows 上跑（Node 20+ 任意）：`node scripts/desktop-reinstall.mjs [--profile desktop] [--dry-run]`
-
-它做四件手工容易做错的事：
-
-1. **显式补 PATH**：DSH Desktop 自带 pnpm 派生子进程时不会把 `node` 放进子环境 PATH，
-   打包/安装阶段可能报 `'node' 不是内部或外部命令`。只补 `…/dependencies/node/bin`——
-   **绝不把 Node 根目录加进 PATH**：该目录同时含 `bash.exe`/`wsl.exe`，进了 PATH 会顶掉
-   WSL 的 bash 与 wsl.exe，而 Windows 侧 bash.exe 对 `\\wsl.localhost\…` 路径无法工作，
-   会连带打断会话的 bash 工具。
-2. **绝不把宿主 SDK 装进 profile**：以 `--config.auto-install-peers=false` 安装，安装后审计
-   `profile/node_modules/@deepseek-ai`；出现 `dsh-tools`/`dsh-agent`/`dsh-llm`/… 即失败退出。
-   rc.3 的解析拦截层会把插件对宿主 SDK 的 import 路由到 `app.asar` 里的副本（见上文
-   「宿主 SDK 的解析」）；profile 副本反而会覆盖它、让 `tools` 服务起不来。
-3. **校正 `dsh.profile.bundles`**：依赖装了但没进 bundles 就不会加载；脚本会补齐并打印清单。
-4. **组合校验**：安装后跑 `dsh --profile <profile> --dump-config`，bundles/patch 结构有错
-   会直接失败；不再用 `createRequire` 探测宿主 SDK（那正是 rc.1 时代的过时做法）。
-
-安装完成后**重启 DSH Desktop** 生效。
-
-## DSH 定制清单（相对 ~/.codex/skills 原版的改造）
-
-| 改造 | 位置 | 说明 |
-|---|---|---|
-| 路径占位符化 | 各 `SKILL.md` 与 `references/*.md` | `~/.codex/skills/...` / `${CODEX_HOME:-$HOME/.codex}/skills/...` → `{{SKILLS_DIR}}/...`，由插件加载时替换为 vendored 目录绝对路径 |
-| 交接机制改造 | `skills/openharmony-ci-orchestrator/scripts/ci_orchestrator.py` | `codex exec --cd --sandbox --json --output-last-message` → `dsh --profile headless <prompt>`（cwd 由进程接管；sandbox 改由 headless profile 配置决定；日志落 stdout/stderr 文件） |
-| OTA 脚本路径 | `.../scripts/phase3_runner.py` | `Path.home()/".codex/..."` → 相对本文件解析（`parents[2]/openharmony-ota-upgrade/...`） |
-| 测试断言同步 | `.../tests/test_phase3_runner.py` | `agent_command: "codex"` → `"dsh"` |
-| 措辞适配 | 各 SKILL.md | 「Codex handoff / codex exec / explorer Subagent / codex/ 分支前缀」→ dsh headless / 审查 Subagent / 本地分支惯例 |
-| 中文本地化 | 全部 SKILL.md 与 references/*.md | 说明性文字翻译为中文（与你 MR/提交/问题的中文工作流一致）；代码块、命令、flag、路径、URL 逐字节保留不变 |
-| 剔除 | 各 skill 的 `agents/` 目录 | codex 专用 subagent 定义，DSH 不消费 |
-| 新增 | `scripts/pipeline_state.py` | 流水线状态读写脚本（get/set/note/reset/status） |
-
-## 与 ~/.codex/skills 的同步
-
-vendored 后，原 codex skill 的后续更新需要手动同步进本仓库：
-覆盖对应 `skills/<name>/` 下的文件后，重新执行上述「路径占位符化」与
-「交接机制」定制（改动点集中，见定制清单）。
-
-## 边界与安全
-
-- 真实动作（MR 创建、OTA 升级）必须用户授权，dry-run 先行；**不触发任何 Jenkins 构建**（门禁由平台 CI 驱动，插件只读观察 + 认领）；
-- 设备操作前必须 `hdc list targets` 确认唯一目标；
-- 状态文件损坏或版本不受支持时保留原文件并报错；
-- Jenkins / GitLab 凭据只从 `~/.config/openharmony-ci-orchestrator/jenkins.env`（0600）或进程环境读取，不写入状态文件或 MR 文本。
+改了阶段契约（`scripts/pipeline_state.py` 的 `STAGE_ORDER` / `STAGE_REQUIRED` / `done` 判据）后，
+记得同步 skill 正文（`src/loop-skill.ts`）与手册第五节——三处都由 `describe` 输出对齐。
+改动插件后按手册「十一、自检清单」走一遍再打 tag。

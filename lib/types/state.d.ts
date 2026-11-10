@@ -1,7 +1,7 @@
 /**
  * 流水线状态：跨会话持久化闭环进度（JSON 文件）。
  * - 写入为原子写（临时文件 + rename），避免并发读半截文件；
- * - 文件损坏时备份为 .bak-<时间戳> 后重建空状态，不崩溃。
+ * - 损坏或不支持的版本保留原文件，交由调用方报告错误。
  */
 export interface PipelineEvent {
     at: string;
@@ -33,7 +33,7 @@ export declare const SCHEMA_VERSION = 1;
 export declare function emptyState(): PipelineState;
 /** 展开 ~ 为用户主目录并解析为绝对路径 */
 export declare function expandStatePath(path: string): string;
-/** 读取状态文件；不存在返回空状态，损坏则备份后重建 */
+/** 读取状态文件；不存在返回空状态，损坏或版本不匹配时报错 */
 export declare function loadState(path: string): PipelineState;
 /** 原子写状态文件（先写临时文件再 rename） */
 export declare function saveState(path: string, state: PipelineState): void;

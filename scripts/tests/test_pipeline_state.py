@@ -132,5 +132,131 @@ class ValidateTriageArtifactsTests(unittest.TestCase):
             self.assertFalse(path.exists(), "形状不合约定时不应写入状态文件")
 
 
+class StageGateTests(unittest.TestCase):
+    """阶段推进契约测试（waiver 阶段 / 越级 / done 判据 / 轮次归档）。
+
+    背景（真实故障）：waiver 在闭环 skill 正文里是正式阶段，脚本的 VALID_STAGES 却没有它，
+    模型按正文执行必然被拒；同时 done 不校验任何前提，回归跑成 INCONCLUSIVE 也能宣布闭环。
+    """
+
+    def state(self, stage=None, **artifacts) -> dict:
+        return {**pipeline_state.empty(), "stage": stage, "artifacts": dict(artifacts)}
+
+    # -- waiver 阶段 -------------------------------------------------------- #
+    def test_waiver_records_must_be_a_non_empty_list(self) -> None:
+        for payload in ({"waiverRecords": []}, {"waiverRecords": "x.txt"}):
+            errors, _ = pipeline_state.validate_stage_artifacts("waiver", payload)
+            self.assertTrue(errors, payload)
+        # 完全没写 waiverRecords 属于「空转」，由阶段闸门拦，而不是形状校验。
+        errors = pipeline_state.check_advance(
+            self.state("triage"), "waiver", {}, force=False)
+        self.assertTrue(any("waiverRecords" in error for error in errors), errors)
+
+    def test_waiver_record_shape(self) -> None:
+        errors, warnings = pipeline_state.validate_stage_artifacts(
+            "waiver", {"waiverRecords": [{"txt": "a.txt", "records": "r", "cases": 3}]})
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        errors, _ = pipeline_state.validate_stage_artifacts(
+            "waiver", {"waiverRecords": [{"cases": "3"}]})
+        self.assertTrue(any("cases" in error for error in errors))
+
+    # -- 越级 --------------------------------------------------------------- #
+    def test_cannot_jump_to_ota_without_report(self) -> None:
+        errors = pipeline_state.check_advance(
+            self.state(), "ota", {"otaResult": "ok", "otaSerial": "s"}, force=False)
+        self.assertTrue(any("report" in error for error in errors), errors)
+
+    def test_cannot_jump_to_ci_without_mr(self) -> None:
+        errors = pipeline_state.check_advance(
+            self.state("triage", reportDir="/r"), "ci",
+            {"jenkinsBuildNumber": 1, "gateBuildUrl": "u", "pipelineId": 2}, force=False)
+        self.assertTrue(any("mr" in error for error in errors), errors)
+
+    def test_force_skips_progress_checks_but_not_done_criteria(self) -> None:
+        self.assertEqual(
+            pipeline_state.check_advance(self.state(), "ota", {"otaResult": "ok", "otaSerial": "s"},
+                                         force=True), [])
+        errors = pipeline_state.check_advance(self.state("mr", mrIid=168), "done", {}, force=True)
+        self.assertTrue(any("回归" in error for error in errors), errors)
+
+    # -- done 判据 ---------------------------------------------------------- #
+    def test_done_needs_regression_or_waiver(self) -> None:
+        errors = pipeline_state.check_advance(self.state("regression"), "done", {}, force=False)
+        self.assertTrue(any("done" in error for error in errors), errors)
+        self.assertEqual(
+            pipeline_state.check_advance(self.state("waiver", waiverRecords=[{"txt": "a.txt"}]),
+                                         "done", {}, force=False), [])
+
+    def test_done_after_mr_requires_passing_regression(self) -> None:
+        state = self.state("mr", mrIid=168)
+        errors = pipeline_state.check_advance(
+            state, "done", {"regressionResult": {"status": "INCONCLUSIVE", "failed": 2, "total": 30}},
+            force=False)
+        self.assertTrue(any("MR" in error for error in errors), errors)
+
+    def test_regression_conclusion_matrix(self) -> None:
+        pass_cases = (
+            {"status": "PASS"},
+            {"verdict": "passed"},
+            {"failed": 0, "total": 44},
+            {"status": "INCONCLUSIVE", "smokeOnly": True},
+        )
+        for value in pass_cases:
+            self.assertTrue(pipeline_state.regression_conclusion(value)[0], value)
+        fail_cases = (
+            None,
+            {"status": "INCONCLUSIVE"},
+            {"status": "FAIL", "failed": 2, "total": 44},
+            {"failed": 0, "total": 0},
+        )
+        for value in fail_cases:
+            self.assertFalse(pipeline_state.regression_conclusion(value)[0], value)
+
+    # -- 轮次归档 ----------------------------------------------------------- #
+    def test_new_report_dir_archives_previous_round(self) -> None:
+        state = self.state("done", reportDir="/reports/r1", mrIid=168)
+        pipeline_state.archive_previous_round(state, "/reports/r2")
+        self.assertEqual(list(state["runs"]), ["r1"])
+        self.assertEqual(state["runs"]["r1"]["artifacts"]["mrIid"], 168)
+        self.assertIsNone(state["stage"])
+        self.assertEqual(state["artifacts"], {})
+        self.assertEqual(state["events"], [])
+
+    def test_same_report_dir_keeps_current_round(self) -> None:
+        state = self.state("triage", reportDir="/reports/r1")
+        pipeline_state.archive_previous_round(state, "/reports/r1")
+        self.assertNotIn("runs", state)
+        self.assertEqual(state["stage"], "triage")
+
+    def test_archive_keeps_only_recent_rounds(self) -> None:
+        state = self.state("done")
+        for index in range(7):
+            state["artifacts"] = {"reportDir": f"/reports/r{index}"}
+            pipeline_state.archive_previous_round(state, f"/reports/r{index + 1}")
+        self.assertEqual(len(state["runs"]), 5)
+
+    # -- CLI 契约 ----------------------------------------------------------- #
+    def test_describe_exposes_the_contract(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS / "pipeline_state.py"), "describe"],
+            text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        contract = json.loads(result.stdout)
+        self.assertIn("waiver", contract["order"])
+        self.assertEqual(contract["order"][0], "report")
+        self.assertIn("waiverRecords", contract["required"]["waiver"])
+
+    def test_cli_accepts_waiver_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "pipeline_state.py"), "set", "waiver",
+                 json.dumps({"waiverRecords": [{"txt": "a.txt", "cases": 1}]}),
+                 "--file", str(path)], text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["stage"], "waiver")
+
+
 if __name__ == "__main__":
     unittest.main()

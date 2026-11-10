@@ -6,7 +6,8 @@
 
 用法:
   pipeline_state.py get [--file PATH]
-  pipeline_state.py set <stage> '<artifacts-json>' [--file PATH]
+  pipeline_state.py set <stage> '<artifacts-json>' [--force] [--file PATH]
+  pipeline_state.py describe
   pipeline_state.py note <stage> '<说明>' [--file PATH]
   pipeline_state.py tokens <stage> [--file PATH]
   pipeline_state.py reset [--file PATH]
@@ -33,7 +34,29 @@ DEFAULT_FILE = Path.home() / ".dsh" / "pipeline-state.json"
 TOKEN_CACHE = Path.home() / ".dsh" / "storages" / "session_projcache.json"
 
 VALID_STAGES = {
-    "report", "triage", "fix", "mr", "ci", "ota", "regression", "done", "reset",
+    "report", "triage", "fix", "waiver", "mr", "ci", "ota", "regression", "done", "reset",
+}
+
+# 阶段推进契约：脚本与 skill 正文共用这一份，避免「正文写了、脚本不认」。waiver 曾如此：
+# 闭环 skill 正文 3b 要求把结论写成 stage=waiver，而 VALID_STAGES 里没有它，执行必被拒。
+STAGE_ORDER = ("report", "triage", "fix", "waiver", "mr", "ci", "ota", "regression", "done")
+# 分支：triage 之后 fix 与 waiver 是**两条腿**（同一轮里允许两条腿都有条目，
+# 阶段指针只记录最前一次推进，条目归属由 artifacts 表达）。
+BRANCH_STAGES = ("fix", "waiver")
+# 回退白名单：回归失败回 fix、重新分诊回 triage、换报告回 report；其余回退需 --force。
+BACKTRACKS = {
+    "triage": STAGE_ORDER,
+    "report": STAGE_ORDER,
+    "fix": ("mr", "ci", "ota", "regression", "done"),
+}
+# 每个阶段必须登记的核心产物（任一即可）：缺了说明这个阶段是空转。
+STAGE_REQUIRED = {
+    "report": ("reportDir",),
+    "waiver": ("waiverRecords",),
+    "mr": ("mrIid",),
+    "ci": ("jenkinsBuildNumber", "gateBuildUrl", "pipelineId"),
+    "ota": ("otaResult", "otaSerial"),
+    "regression": ("regressionResult",),
 }
 
 
@@ -149,6 +172,31 @@ def validate_stage_artifacts(stage: str, artifacts: dict) -> tuple[list[str], li
     """
     errors: list[str] = []
     warnings: list[str] = []
+    if stage == "waiver":
+        records = artifacts.get("waiverRecords")
+        if records is not None:
+            if not isinstance(records, list) or not records:
+                errors.append("waiverRecords 必须是非空清单，每项形如 "
+                              '{"txt": "<套件>.txt", "zip": "<套件>-豁免材料.zip", '
+                              '"records": "<同目录申请记录>", "cases": <覆盖用例数>}')
+            else:
+                for item in records:
+                    if not isinstance(item, dict):
+                        errors.append(f"waiverRecords 每项应为对象，收到 {type(item).__name__}")
+                        continue
+                    cases = item.get("cases")
+                    if cases is not None and not isinstance(cases, int):
+                        errors.append("waiverRecords[*].cases 必须是整数（覆盖用例数）")
+                    for key in ("txt", "records"):
+                        if not item.get(key):
+                            warnings.append(
+                                f"waiverRecords 项缺 {key}（建议写全 txt / zip / records / cases）")
+        return errors, warnings
+    if stage == "report":
+        report_dir = artifacts.get("reportDir")
+        if report_dir is not None and (not isinstance(report_dir, str) or not report_dir):
+            errors.append(f"reportDir 必须是非空字符串，收到 {report_dir!r}")
+        return errors, warnings
     if stage != "triage":
         return errors, warnings
 
@@ -205,6 +253,95 @@ def validate_stage_artifacts(stage: str, artifacts: dict) -> tuple[list[str], li
     return errors, warnings
 
 
+def stage_index(stage: str) -> int:
+    return STAGE_ORDER.index(stage) if stage in STAGE_ORDER else -1
+
+
+def regression_conclusion(value: object) -> tuple[bool, str]:
+    """回归结论能否判为「通过」。
+
+    phase-3 的状态口径是 PASS / FAIL / INCONCLUSIVE（openharmony-ci-orchestrator 的
+    test_harness.verdict）；INCONCLUSIVE 不算通过，除非本轮显式声明 smokeOnly。
+    """
+    if not isinstance(value, dict):
+        return False, "未登记 regressionResult"
+    status = str(value.get("status") or value.get("verdict") or "").upper()
+    if status in ("PASS", "PASSED", "OK"):
+        return True, status
+    failed, total = value.get("failed"), value.get("total")
+    if isinstance(failed, int) and failed == 0 and isinstance(total, int) and total > 0:
+        return True, "failed=0"
+    if status == "INCONCLUSIVE" and value.get("smokeOnly") is True:
+        return True, "smoke-only"
+    return False, f"status={status or '未写'}"
+
+
+def check_advance(state: dict, stage: str, artifacts: dict, force: bool) -> list[str]:
+    """阶段闸门：空转、越级/乱回退、done 判据。返回阻塞性错误（force 只能越过前两类）。"""
+    merged = {**(state.get("artifacts") or {}), **artifacts}
+    current = state.get("stage")
+    errors: list[str] = []
+    if stage == "done":
+        ok_regression, why = regression_conclusion(merged.get("regressionResult"))
+        if not merged.get("waiverRecords") and not ok_regression:
+            errors.append(
+                "done 需要「回归通过」或「豁免记录」之一；"
+                f"当前回归结论：{why}。只能跑 smoke 时写 "
+                'regressionResult {"status": "INCONCLUSIVE", "smokeOnly": true} 明示降级')
+        if merged.get("mrIid") and not ok_regression:
+            errors.append(
+                "本轮走过 MR（fix→mr 分支），done 必须带通过的 regressionResult；回归没通过不能宣布闭环")
+    if force:
+        return errors
+    required = STAGE_REQUIRED.get(stage)
+    if required and not any(merged.get(key) for key in required):
+        errors.append(f"{stage} 阶段缺少核心产物（{' / '.join(required)}）；"
+                      "只想记事件请用 note，不要用 set 推进")
+    # report/triage/waiver 都允许在空状态上开（续跑可能从任一条腿接上）；
+    # mr 及之后才要求前序主线阶段已登记，防止「没做 fix 就直接宣布 CI 通过」。
+    if stage != "done" and stage_index(stage) > stage_index("waiver"):
+        # 前序主线阶段必须登记过核心产物，不能一步跳到 ota/regression 假装做过；
+        # fix 与 waiver 是并行的两条腿，任一登记即可，故不参与该校验。
+        for earlier in STAGE_ORDER[:stage_index(stage)]:
+            keys = STAGE_REQUIRED.get(earlier)
+            if not keys or earlier in BRANCH_STAGES:
+                continue
+            if not any(merged.get(key) for key in keys):
+                errors.append(f"不能跳到 {stage}：前序阶段 {earlier} 未登记"
+                              f"（{' / '.join(keys)}）")
+                break
+    if current in STAGE_ORDER:
+        if stage_index(stage) < stage_index(current) and current not in BACKTRACKS.get(stage, ()):
+            errors.append(f"不能从 {current} 回退到 {stage}"
+                          f"（允许的回退目标：{sorted(BACKTRACKS)}）；确需如此请加 --force")
+    return errors
+
+
+def archive_previous_round(state: dict, new_report_dir: str) -> None:
+    """换了一份报告：上一轮的 stage/产物/事件归档进 runs[]，避免两轮产物串在一起。
+
+    原先状态只有一个扁平 artifacts 袋、`set` 直接 update 合并——第二轮开始后仍能看到
+    第一轮的 mrIid / otaSerial，误判「已经做过」。归档后当前轮从干净状态重来。
+    """
+    old = (state.get("artifacts") or {}).get("reportDir")
+    if not old or old == new_report_dir:
+        return
+    run_id = Path(str(old)).name or "previous"
+    runs = state.setdefault("runs", {})
+    runs[run_id] = {
+        "archivedAt": datetime.now(timezone.utc).isoformat(),
+        "stage": state.get("stage"),
+        "reportDir": old,
+        "artifacts": state.get("artifacts") or {},
+    }
+    for stale in list(runs)[:-5]:
+        runs.pop(stale, None)
+    state["stage"] = None
+    state["artifacts"] = {}
+    state["events"] = []
+    print(f"note: 上一轮（{run_id}）已归档到 runs[]，当前轮从空状态开始", file=sys.stderr)
+
+
 def cmd_set(args: argparse.Namespace, state: dict) -> int:
     if args.stage not in VALID_STAGES:
         print(f"error: 非法阶段 {args.stage!r}，允许: {sorted(VALID_STAGES)}", file=sys.stderr)
@@ -218,14 +355,23 @@ def cmd_set(args: argparse.Namespace, state: dict) -> int:
         print("error: artifacts 必须是 JSON 对象", file=sys.stderr)
         return 2
     errors, warnings = validate_stage_artifacts(args.stage, artifacts)
+    report_dir = artifacts.get("reportDir")
+    if (args.stage == "report" and not args.force and isinstance(report_dir, str) and report_dir
+            and (report_dir.startswith("/") or report_dir.startswith("~"))
+            and not Path(report_dir).expanduser().is_dir()):
+        # 只校验本机可判定的 POSIX 形态；Windows 盘符 / UNC 形态交给调用方。
+        errors.append(f"reportDir 不存在或不是目录: {report_dir}"
+                      "（路径失效后流水线无法续跑；确认后可用 --force 越过）")
+    errors.extend(check_advance(state, args.stage, artifacts, args.force))
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
     if errors:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)
-        print("error: 产物形状不合约定，未写入（见 triage SKILL 的『产出（硬约定）』）",
-              file=sys.stderr)
+        print("error: 阶段推进被拒，未写入（契约见 `pipeline_state.py describe`）", file=sys.stderr)
         return 2
+    if args.stage == "report" and isinstance(report_dir, str):
+        archive_previous_round(state, report_dir)
     state["stage"] = args.stage
     state["artifacts"].update(artifacts)
     state["events"].append({
@@ -277,10 +423,14 @@ def main(argv: list[str]) -> int:
     with_file(p_status)
     p_status.set_defaults(handler=cmd_status)
 
+    p_describe = sub.add_parser("describe", help="输出阶段推进契约（JSON，供 skill/文档派生）")
+
     p_set = sub.add_parser("set", help="设置阶段并合并产物")
     with_file(p_set)
-    p_set.add_argument("stage", help="阶段名（report/triage/fix/mr/ci/ota/regression/done）")
+    p_set.add_argument("stage", help="阶段名（report/triage/fix/waiver/mr/ci/ota/regression/done）")
     p_set.add_argument("artifacts_json", help="产物 JSON 对象，如 '{\"mrIid\": 168}'")
+    p_set.add_argument("--force", action="store_true",
+                       help="越过空转/回退校验（done 判据不可越过）")
     p_set.set_defaults(handler=cmd_set)
 
     p_note = sub.add_parser("note", help="追加一条流水线事件")
@@ -295,6 +445,10 @@ def main(argv: list[str]) -> int:
     p_tokens.set_defaults(handler=cmd_tokens)
 
     args = parser.parse_args(argv)
+
+    if args.command == "describe":
+        return cmd_describe()
+
     path = state_file(args.file)
 
     if args.command == "reset":
@@ -323,6 +477,28 @@ def main(argv: list[str]) -> int:
     if rc == 0 and args.command in ("set", "note", "tokens"):
         save(path, state)
     return rc
+
+
+def cmd_describe() -> int:
+    """输出阶段推进契约。skill 正文、操作手册、README 的流程图都从这一份派生。
+
+    为什么单独做成子命令：原先「阶段顺序/必需产物/终态判据」散落在 skill 正文、
+    操作手册和脚本三处，改一处忘两处——waiver 就是这么裂开的（正文有、脚本没有）。
+    """
+    contract = {
+        "schemaVersion": SCHEMA_VERSION,
+        "order": list(STAGE_ORDER),
+        "branches": list(BRANCH_STAGES),
+        "backtracks": {stage: list(targets) for stage, targets in BACKTRACKS.items()},
+        "required": {stage: list(keys) for stage, keys in STAGE_REQUIRED.items()},
+        "doneRequires": {
+            "anyOf": ["waiverRecords", "regressionResult"],
+            "regressionPass": ["status=PASS", "failed=0 且 total>0", "status=INCONCLUSIVE 且 smokeOnly=true"],
+            "withMr": "有 mrIid 时 regressionResult 必须判为通过",
+        },
+    }
+    print(json.dumps(contract, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_status(args: argparse.Namespace, state: dict) -> int:
